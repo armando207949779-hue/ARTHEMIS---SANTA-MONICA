@@ -32,7 +32,8 @@ from docx.enum.style import WD_STYLE_TYPE
 from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
 from docx.shared import Inches, Pt, RGBColor
-from PIL import Image, ImageOps
+from PIL import Image, ImageChops, ImageOps
+import reportlab
 from reportlab.lib import colors
 from reportlab.lib.enums import TA_CENTER, TA_LEFT, TA_RIGHT
 from reportlab.lib.pagesizes import A4, letter
@@ -105,7 +106,7 @@ def validar(datos: dict):
 
 
 def normalizar_logo(raw: bytes) -> bytes:
-    """Convierte el SVG institucional (PNG incrustado) a PNG y recorta transparencia.
+    """Convierte el logo a PNG y elimina márgenes transparentes o blancos.
 
     Word y ReportLab admiten PNG de forma nativa, sin depender de CairoSVG.
     Para otros SVG vectoriales, se solicita una exportación PNG del usuario.
@@ -143,11 +144,31 @@ def normalizar_logo(raw: bytes) -> bytes:
     except (OSError, ValueError) as exc:
         raise ValueError("Formato de logo no válido. Usa SVG institucional, PNG o JPG.") from exc
 
-    # El SVG de OTEC tiene amplios márgenes transparentes: los retiramos.
+    # El SVG oficial tiene transparencias; algunos JPG antiguos tienen, en
+    # cambio, un logo horizontal pequeño sobre un lienzo blanco cuadrado.
     mascara = imagen.getchannel("A").point(lambda x: 255 if x > 12 else 0)
     limites = mascara.getbbox()
+    if limites == (0, 0, imagen.width, imagen.height):
+        esquinas = (
+            imagen.getpixel((0, 0)), imagen.getpixel((imagen.width - 1, 0)),
+            imagen.getpixel((0, imagen.height - 1)),
+            imagen.getpixel((imagen.width - 1, imagen.height - 1)),
+        )
+        if all(min(pixel[:3]) >= 235 for pixel in esquinas):
+            fondo_blanco = Image.new("RGB", imagen.size, "white")
+            diferencia = ImageChops.difference(imagen.convert("RGB"), fondo_blanco)
+            mascara_color = diferencia.convert("L").point(
+                lambda valor: 255 if valor > 18 else 0
+            )
+            # Evita recortar fotografías o logotipos sin margen significativo.
+            candidato = mascara_color.getbbox()
+            if candidato:
+                area = ((candidato[2] - candidato[0]) *
+                        (candidato[3] - candidato[1]))
+                if area < imagen.width * imagen.height * 0.88:
+                    limites = candidato
     if limites:
-        relleno = max(4, round(min(imagen.size) * 0.012))
+        relleno = max(5, round(min(imagen.size) * 0.018))
         izquierda, arriba, derecha, abajo = limites
         limites = (
             max(0, izquierda - relleno), max(0, arriba - relleno),
@@ -191,9 +212,9 @@ def logo_con_placa(raw: bytes | None) -> bytes | None:
         return None
     with Image.open(io.BytesIO(raw)) as original:
         marca = original.convert("RGBA")
-    marca.thumbnail((1010, 315), Image.Resampling.LANCZOS)
-    placa = Image.new("RGBA", (1130, 400), "#FFFFFF")
-    placa.alpha_composite(marca, ((1130 - marca.width) // 2, (400 - marca.height) // 2))
+    marca.thumbnail((950, 330), Image.Resampling.LANCZOS)
+    placa = Image.new("RGBA", (1000, 360), "#FFFFFF")
+    placa.alpha_composite(marca, ((1000 - marca.width) // 2, (360 - marca.height) // 2))
     salida = io.BytesIO()
     placa.save(salida, format="PNG", optimize=True)
     return salida.getvalue()
@@ -434,10 +455,10 @@ def generar_word(datos: dict, logo_bytes: bytes | None = None) -> bytes:
     izq, der = cab.rows[0].cells
     fondo_celda(izq, BLANCO)
     fondo_celda(der, principal)
-    margenes_celda(izq, 210, 180, 200, 160)
+    margenes_celda(izq, 145, 120, 145, 120)
     margenes_celda(der, 90, 40, 90, 0)
     izq.paragraphs[0].alignment = WD_ALIGN_PARAGRAPH.CENTER
-    logo_word(izq.paragraphs[0], logo_bytes, max_ancho=3.15, max_alto=1.10,
+    logo_word(izq.paragraphs[0], logo_bytes, max_ancho=3.48, max_alto=1.27,
               fallback="OTEC SANTA MÓNICA")
     p = der.paragraphs[0]
     p.alignment = WD_ALIGN_PARAGRAPH.RIGHT
@@ -537,12 +558,12 @@ def generar_word(datos: dict, logo_bytes: bytes | None = None) -> bytes:
     c_logo, c_info = tab.rows[0].cells
     fondo_celda(c_logo, principal if logo_bytes else BLANCO)
     fondo_celda(c_info, principal)
-    margenes_celda(c_logo, 60, 65, 55, 70)
+    margenes_celda(c_logo, 50, 60, 45, 60)
     margenes_celda(c_info, 100, 135, 90, 95)
     c_info.vertical_alignment = WD_ALIGN_VERTICAL.CENTER
     c_logo.paragraphs[0].alignment = WD_ALIGN_PARAGRAPH.CENTER
     logo_word(c_logo.paragraphs[0], logo_con_placa(logo_bytes),
-              max_ancho=2.12, max_alto=0.75,
+              max_ancho=2.20, max_alto=0.80,
               fallback="OTEC SANTA MÓNICA")
     p = c_info.paragraphs[0]
     p.alignment = WD_ALIGN_PARAGRAPH.RIGHT
@@ -622,7 +643,12 @@ def generar_word(datos: dict, logo_bytes: bytes | None = None) -> bytes:
 # ------------------------------ Utilidades PDF --------------------------------
 def fuentes_pdf():
     """Intenta incrustar una fuente Unicode; evita perder tildes y símbolos."""
+    # ReportLab distribuye Vera.ttf y VeraBd.ttf incluso si Streamlit Cloud
+    # no trae fuentes DejaVu ni Liberation en el sistema operativo.
+    fuentes_incluidas = Path(reportlab.__file__).resolve().parent / "fonts"
     posibles = [
+        (str(fuentes_incluidas / "Vera.ttf"),
+         str(fuentes_incluidas / "VeraBd.ttf")),
         ("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
          "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"),
         ("/usr/share/fonts/truetype/liberation2/LiberationSans-Regular.ttf",
@@ -670,7 +696,9 @@ def pdf_logo(c, raw: bytes | None, x, y_top, max_w, max_h,
             w, h = imagen_dimensiones(raw)
             escala = min(max_w / w, max_h / h)
             dw, dh = w * escala, h * escala
-            c.drawImage(ImageReader(io.BytesIO(raw)), x, y_top - dh,
+            dx = x + (max_w - dw) / 2
+            dy = y_top - max_h + (max_h - dh) / 2
+            c.drawImage(ImageReader(io.BytesIO(raw)), dx, dy,
                         width=dw, height=dh, mask="auto")
             return
         except Exception:
@@ -697,8 +725,8 @@ def generar_pdf(datos: dict, logo_bytes: bytes | None = None) -> bytes:
 
     # El logo tiene letras azul marino: una placa blanca preserva su identidad.
     c.setFillColor(rlcolor(BLANCO))
-    c.roundRect(x, h - 183, 317, 117, radius=10, stroke=0, fill=1)
-    pdf_logo(c, logo_bytes, x + 18, h - 84, 281, 91, principal, bold)
+    c.roundRect(x, h - 187, 340, 132, radius=10, stroke=0, fill=1)
+    pdf_logo(c, logo_bytes, x + 10, h - 64, 320, 116, principal, bold)
     pdf_parrafo(c, corto(datos.get("codigo"), 34), w - 210, h - 80, 158, 21,
                 bold, BLANCO, 9, 7, align=TA_RIGHT)
     pdf_parrafo(c, datos.get("fecha"), w - 210, h - 103, 158, 19,
@@ -752,7 +780,7 @@ def generar_pdf(datos: dict, logo_bytes: bytes | None = None) -> bytes:
         c.rect(0, h - 106, w, 106, stroke=0, fill=1)
         c.setFillColor(rlcolor(BLANCO))
         c.roundRect(left, h - 87, 182, 67, radius=5, stroke=0, fill=1)
-        pdf_logo(c, logo_bytes, left + 9, h - 29, 164, 53, principal, bold)
+        pdf_logo(c, logo_bytes, left + 6, h - 24, 170, 60, principal, bold)
         pdf_parrafo(c, corto(datos["nombre_curso"], 68), left + 252, h - 35,
                     usable - 252, 36, bold, BLANCO, 9.1, 7, align=TA_RIGHT)
         pdf_parrafo(c, corto(datos.get("titulo_guia"), 64), left + 252, h - 72,
@@ -837,6 +865,10 @@ def run():
         if logo_subido:
             try:
                 logo = normalizar_logo(logo_subido.getvalue())
+                st.caption(
+                    f"Logo seleccionado: {logo_subido.name}. "
+                    "Se ajustan automáticamente sus márgenes transparentes o blancos."
+                )
             except ValueError as exc:
                 st.error(f"No se pudo cargar el logo: {exc}")
                 logo = None
@@ -845,6 +877,7 @@ def run():
             def cargar():
                 return logo_predeterminado()
             logo = cargar()
+            st.caption("Usando el SVG oficial del repositorio. Para volver a él, retira cualquier archivo subido.")
         if logo:
             st.image(logo, width=260)
         else:
