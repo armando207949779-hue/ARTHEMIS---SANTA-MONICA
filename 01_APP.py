@@ -47,7 +47,7 @@ from reportlab.platypus import Paragraph
 
 # -------------------------------- Configuración --------------------------------
 LOGO_LOCAL = "OTEC_Santa_Monica_Opcion_1.svg"
-VERSION_FORMATO = "4.2-word-azul-solido"
+VERSION_FORMATO = "4.3-word-alineado"
 LOGO_URL = (
     "https://raw.githubusercontent.com/armando207949779-hue/"
     "ARTHEMIS---SANTA-MONICA/main/OTEC_Santa_Monica_Opcion_1.svg"
@@ -420,18 +420,21 @@ def generar_word(datos: dict, logo_bytes: bytes | None = None) -> bytes:
     # Marca y datos de edición.
     cab = panel.add_table(rows=1, cols=2)
     cab.autofit = False
-    cab.columns[0].width = Inches(ancho * 0.55)
-    cab.columns[1].width = Inches(ancho * 0.45)
+    cab.columns[0].width = Inches(ancho * 0.65)
+    cab.columns[1].width = Inches(ancho * 0.35)
     bordes_tabla(cab)
     izq, der = cab.rows[0].cells
     # El blanco cubre únicamente la imagen del logo, no toda la celda.
     fondo_celda(izq, principal if logo_bytes else BLANCO)
     fondo_celda(der, principal)
-    margenes_celda(izq, 100, 50, 100, 50)
+    margenes_celda(izq, 100, 0, 100, 50)
     margenes_celda(der, 90, 40, 90, 0)
-    izq.paragraphs[0].alignment = WD_ALIGN_PARAGRAPH.CENTER
+    izq.paragraphs[0].alignment = WD_ALIGN_PARAGRAPH.LEFT
+    # Compensa el sangrado predeterminado de las tablas anidadas de Word para
+    # alinear el borde de la placa del logo con el título y la ficha.
+    izq.paragraphs[0].paragraph_format.left_indent = Inches(-0.12)
     logo_word(izq.paragraphs[0], logo_con_placa(logo_bytes),
-              max_ancho=3.48, max_alto=1.37,
+              max_ancho=4.22, max_alto=1.77,
               fallback="OTEC SANTA MÓNICA")
     p = der.paragraphs[0]
     p.alignment = WD_ALIGN_PARAGRAPH.RIGHT
@@ -442,12 +445,13 @@ def generar_word(datos: dict, logo_bytes: bytes | None = None) -> bytes:
     texto_word(p2, datos.get("fecha"), 9, "#D6E7F4")
 
     linea = panel.add_paragraph()
-    linea.paragraph_format.space_before = Pt(19)
+    linea.paragraph_format.space_before = Pt(5)
     linea.paragraph_format.space_after = Pt(0)
+    linea.paragraph_format.right_indent = Inches(max(0, ancho - 2.14))
     borde_parrafo(linea, acento, grosor="16")
 
     espacio = panel.add_paragraph()
-    espacio.paragraph_format.space_after = Pt(60)
+    espacio.paragraph_format.space_after = Pt(12)
 
     tipo = panel.add_paragraph()
     tipo.paragraph_format.space_after = Pt(12)
@@ -467,7 +471,7 @@ def generar_word(datos: dict, logo_bytes: bytes | None = None) -> bytes:
 
     # Ficha con etiquetas consistentes, alturas automáticas y sin recortes.
     espacio2 = panel.add_paragraph()
-    espacio2.paragraph_format.space_before = Pt(30)
+    espacio2.paragraph_format.space_before = Pt(95)
     espacio2.paragraph_format.space_after = Pt(9)
     etiqueta = panel.add_paragraph()
     etiqueta.paragraph_format.space_after = Pt(7)
@@ -492,7 +496,7 @@ def generar_word(datos: dict, logo_bytes: bytes | None = None) -> bytes:
         texto_word(p2, valor, 10, BLANCO)
 
     cierre = panel.add_paragraph()
-    cierre.paragraph_format.space_before = Pt(18)
+    cierre.paragraph_format.space_before = Pt(40)
     cierre.paragraph_format.space_after = Pt(0)
     texto_word(cierre, datos["otec_nombre"], 9, BLANCO, True)
     p = panel.add_paragraph()
@@ -841,7 +845,7 @@ def run():
         </div>""",
         unsafe_allow_html=True,
     )
-    st.caption(f"Versión del formato: {VERSION_FORMATO} · Portada Word con azul sólido y logo compacto")
+    st.caption(f"Versión del formato: {VERSION_FORMATO} · Word azul sólido con portada alineada al PDF")
 
     # No ofrecer descargas generadas por una versión anterior de la aplicación.
     for clave_antigua in ("plantilla_otec_v2", "plantilla_otec_v3"):
