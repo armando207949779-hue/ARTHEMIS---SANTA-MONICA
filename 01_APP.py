@@ -1,4 +1,5 @@
 import io
+import os
 from datetime import date
 import requests
 import streamlit as st
@@ -10,13 +11,13 @@ from docx.oxml import OxmlElement, parse_xml
 from docx.oxml.ns import qn, nsdecls
 from fpdf import FPDF
 
-# URL RAW del logo en GitHub (convertida desde /blob/main/ a raw.githubusercontent.com)
+LOGO_LOCAL_PATH = "OTEC_Santa_Monica_SII.jpg"
 LOGO_URL_DEFAULT = (
     "https://raw.githubusercontent.com/armando207949779-hue/"
     "ARTHEMIS---SANTA-MONICA/main/OTEC_Santa_Monica_SII.jpg"
 )
 
-# Paleta corporativa
+# Paleta corporativa por defecto
 COLOR_NAVY_HEX = "1B365D"
 COLOR_ACCENT_HEX = "2B6CB0"
 COLOR_LIGHT_BG_HEX = "F4F6F9"
@@ -33,9 +34,16 @@ COLOR_LIGHT_BG_RGB = (244, 246, 249)
 # UTILIDADES GENERALES
 # ==============================================================================
 @st.cache_data(show_spinner=False)
-def descargar_logo(url: str) -> bytes | None:
+def cargar_logo_default() -> bytes | None:
+    """1) Intenta leer el logo local en el repo. 2) Si no existe, lo descarga de GitHub."""
+    if os.path.exists(LOGO_LOCAL_PATH):
+        try:
+            with open(LOGO_LOCAL_PATH, "rb") as f:
+                return f.read()
+        except Exception:
+            pass
     try:
-        resp = requests.get(url, timeout=10)
+        resp = requests.get(LOGO_URL_DEFAULT, timeout=10)
         if resp.status_code == 200 and resp.content:
             return resp.content
     except Exception:
@@ -44,7 +52,6 @@ def descargar_logo(url: str) -> bytes | None:
 
 
 def limpiar_latin1(texto: str) -> str:
-    """Evita errores de codificación en fuentes estándar de FPDF2."""
     reemplazos = {
         "—": "-",
         "–": "-",
@@ -60,6 +67,12 @@ def limpiar_latin1(texto: str) -> str:
     return texto.encode("latin-1", "replace").decode("latin-1")
 
 
+def truncar_texto(texto: str, max_chars: int) -> str:
+    if len(texto) <= max_chars:
+        return texto
+    return texto[: max_chars - 3].rstrip() + "..."
+
+
 # ==============================================================================
 # UTILIDADES XML PARA PYTHON-DOCX
 # ==============================================================================
@@ -68,7 +81,7 @@ def set_cell_shading(cell, color_hex: str):
     cell._tc.get_or_add_tcPr().append(shading)
 
 
-def set_cell_margins(cell, top=100, bottom=100, left=140, right=140):
+def set_cell_margins(cell, top=110, bottom=110, left=150, right=150):
     tcPr = cell._tc.get_or_add_tcPr()
     tcMar = OxmlElement("w:tcMar")
     for m, val in [("top", top), ("bottom", bottom), ("left", left), ("right", right)]:
@@ -86,9 +99,22 @@ def set_table_borders(table, color_hex=COLOR_BORDER_HEX, sz="4"):
         f'  <w:top w:val="single" w:sz="{sz}" w:space="0" w:color="{color_hex}"/>'
         f'  <w:bottom w:val="single" w:sz="{sz}" w:space="0" w:color="{color_hex}"/>'
         f'  <w:insideH w:val="single" w:sz="{sz}" w:space="0" w:color="{color_hex}"/>'
-        f'  <w:left w:val="none"/>'
-        f'  <w:right w:val="none"/>'
-        f'  <w:insideV w:val="none"/>'
+        f'  <w:left w:val="none"/><w:right w:val="none"/><w:insideV w:val="none"/>'
+        f"</w:tblBorders>"
+    )
+    tblPr.append(borders)
+
+
+def set_box_borders(table, color_hex=COLOR_BORDER_HEX, accent_left=COLOR_ACCENT_HEX):
+    """Recuadro limpio con borde izquierdo de acento corporativo."""
+    tblPr = table._tbl.tblPr
+    borders = parse_xml(
+        f'<w:tblBorders {nsdecls("w")}>'
+        f'  <w:top w:val="single" w:sz="4" w:space="0" w:color="{color_hex}"/>'
+        f'  <w:bottom w:val="single" w:sz="4" w:space="0" w:color="{color_hex}"/>'
+        f'  <w:right w:val="single" w:sz="4" w:space="0" w:color="{color_hex}"/>'
+        f'  <w:left w:val="single" w:sz="18" w:space="0" w:color="{accent_left}"/>'
+        f'  <w:insideH w:val="none"/><w:insideV w:val="none"/>'
         f"</w:tblBorders>"
     )
     tblPr.append(borders)
@@ -118,12 +144,13 @@ def add_paragraph_border(paragraph, side="bottom", color_hex=COLOR_ACCENT_HEX, s
     pPr.append(pBdr)
 
 
-def add_page_number_field(run):
+def add_xml_field(run, field_name: str):
+    """Inserta campos dinámicos de Word como PAGE o NUMPAGES."""
     fldChar1 = OxmlElement("w:fldChar")
     fldChar1.set(qn("w:fldCharType"), "begin")
     instrText = OxmlElement("w:instrText")
     instrText.set(qn("xml:space"), "preserve")
-    instrText.text = "PAGE"
+    instrText.text = field_name
     fldChar2 = OxmlElement("w:fldChar")
     fldChar2.set(qn("w:fldCharType"), "separate")
     fldChar3 = OxmlElement("w:fldChar")
@@ -140,7 +167,6 @@ def add_page_number_field(run):
 def generar_word(datos: dict, logo_bytes: bytes | None) -> bytes:
     doc = Document()
 
-    # Configuración de página (Carta / Letter)
     section = doc.sections[0]
     section.page_width = Inches(8.5)
     section.page_height = Inches(11.0)
@@ -150,7 +176,6 @@ def generar_word(datos: dict, logo_bytes: bytes | None) -> bytes:
     section.right_margin = Inches(1.0)
     section.different_first_page_header_footer = True
 
-    # Fuente base
     normal_style = doc.styles["Normal"]
     normal_style.font.name = "Calibri"
     normal_style.font.size = Pt(11)
@@ -165,13 +190,13 @@ def generar_word(datos: dict, logo_bytes: bytes | None) -> bytes:
     remove_table_borders(htbl)
 
     c_logo, c_info = htbl.rows[0].cells
-    c_logo.width = Inches(1.8)
-    c_info.width = Inches(4.7)
+    c_logo.width = Inches(1.6)
+    c_info.width = Inches(4.9)
 
     p_hlogo = c_logo.paragraphs[0]
     p_hlogo.alignment = WD_ALIGN_PARAGRAPH.LEFT
     if logo_bytes:
-        p_hlogo.add_run().add_picture(io.BytesIO(logo_bytes), width=Inches(1.2))
+        p_hlogo.add_run().add_picture(io.BytesIO(logo_bytes), width=Inches(1.1))
     else:
         r = p_hlogo.add_run("OTEC SANTA MÓNICA")
         r.bold = True
@@ -180,22 +205,21 @@ def generar_word(datos: dict, logo_bytes: bytes | None) -> bytes:
 
     p_hinfo = c_info.paragraphs[0]
     p_hinfo.alignment = WD_ALIGN_PARAGRAPH.RIGHT
-    r1 = p_hinfo.add_run(f"{datos['nombre_curso']}\n")
+    r1 = p_hinfo.add_run(f"{truncar_texto(datos['nombre_curso'], 65)}\n")
     r1.bold = True
     r1.font.size = Pt(9)
     r1.font.color.rgb = RGBColor(*COLOR_NAVY_RGB)
-    r2 = p_hinfo.add_run(f"{datos['titulo_guia']}  |  {datos['otec_nombre']}")
+    r2 = p_hinfo.add_run(f"{truncar_texto(datos['titulo_guia'], 55)}  |  OTEC Santa Mónica")
     r2.font.size = Pt(8)
     r2.font.color.rgb = RGBColor(*COLOR_MUTED_RGB)
 
-    # Línea divisoria bajo encabezado
     p_hline = header.add_paragraph()
     p_hline.paragraph_format.space_before = Pt(2)
     p_hline.paragraph_format.space_after = Pt(6)
     add_paragraph_border(p_hline, side="bottom", color_hex=COLOR_ACCENT_HEX, sz="8")
 
     # ------------------------------------------------------------------
-    # PIE DE PÁGINA (Páginas 2 en adelante)
+    # PIE DE PÁGINA (Páginas 2 en adelante — "Página X de Y")
     # ------------------------------------------------------------------
     footer = section.footer
     p_fline = footer.paragraphs[0]
@@ -208,36 +232,36 @@ def generar_word(datos: dict, logo_bytes: bytes | None) -> bytes:
     remove_table_borders(ftbl)
 
     fc1, fc2 = ftbl.rows[0].cells
-    fc1.width = Inches(4.8)
-    fc2.width = Inches(1.7)
+    fc1.width = Inches(5.0)
+    fc2.width = Inches(1.5)
 
     p_f1 = fc1.paragraphs[0]
-    rf1 = p_f1.add_run(f"{datos['otec_nombre']}  |  {datos['pie_pagina']}")
+    rf1 = p_f1.add_run(f"OTEC Santa Mónica  |  {datos['pie_pagina']}")
     rf1.font.size = Pt(8)
     rf1.font.color.rgb = RGBColor(*COLOR_MUTED_RGB)
 
     p_f2 = fc2.paragraphs[0]
     p_f2.alignment = WD_ALIGN_PARAGRAPH.RIGHT
-    rf2 = p_f2.add_run("Página ")
-    rf2.font.size = Pt(8)
-    rf2.font.color.rgb = RGBColor(*COLOR_MUTED_RGB)
-    rf_num = p_f2.add_run()
-    rf_num.font.size = Pt(8)
-    rf_num.font.bold = True
-    rf_num.font.color.rgb = RGBColor(*COLOR_NAVY_RGB)
-    add_page_number_field(rf_num)
+    for txt, is_field in [("Página ", None), ("", "PAGE"), (" de ", None), ("", "NUMPAGES")]:
+        r = p_f2.add_run(txt)
+        r.font.size = Pt(8)
+        if is_field:
+            r.bold = True
+            r.font.color.rgb = RGBColor(*COLOR_NAVY_RGB)
+            add_xml_field(r, is_field)
+        else:
+            r.font.color.rgb = RGBColor(*COLOR_MUTED_RGB)
 
     # ------------------------------------------------------------------
     # PORTADA (Página 1)
     # ------------------------------------------------------------------
-    # Franja superior decorativa
     banner = doc.add_table(rows=1, cols=1)
     banner.alignment = WD_TABLE_ALIGNMENT.CENTER
     remove_table_borders(banner)
     bcell = banner.rows[0].cells[0]
     bcell.width = Inches(6.5)
     set_cell_shading(bcell, COLOR_NAVY_HEX)
-    set_cell_margins(bcell, top=120, bottom=120, left=180, right=180)
+    set_cell_margins(bcell, top=130, bottom=130, left=180, right=180)
     bp = bcell.paragraphs[0]
     bp.alignment = WD_ALIGN_PARAGRAPH.CENTER
     br = bp.add_run(datos["otec_nombre"].upper())
@@ -245,24 +269,21 @@ def generar_word(datos: dict, logo_bytes: bytes | None) -> bytes:
     br.font.size = Pt(11)
     br.font.color.rgb = RGBColor(255, 255, 255)
 
-    # Espacio + Logo centrado
     p_sp = doc.add_paragraph()
-    p_sp.paragraph_format.space_before = Pt(24)
+    p_sp.paragraph_format.space_before = Pt(22)
     p_sp.alignment = WD_ALIGN_PARAGRAPH.CENTER
     if logo_bytes:
-        p_sp.add_run().add_picture(io.BytesIO(logo_bytes), width=Inches(2.4))
+        p_sp.add_run().add_picture(io.BytesIO(logo_bytes), width=Inches(2.3))
 
-    # Etiqueta tipo documento
     p_tipo = doc.add_paragraph()
     p_tipo.alignment = WD_ALIGN_PARAGRAPH.CENTER
-    p_tipo.paragraph_format.space_before = Pt(28)
+    p_tipo.paragraph_format.space_before = Pt(24)
     p_tipo.paragraph_format.space_after = Pt(6)
     rt = p_tipo.add_run(datos["tipo_documento"].upper())
     rt.bold = True
     rt.font.size = Pt(11)
     rt.font.color.rgb = RGBColor(*COLOR_ACCENT_RGB)
 
-    # Nombre del curso
     p_curso = doc.add_paragraph()
     p_curso.alignment = WD_ALIGN_PARAGRAPH.CENTER
     p_curso.paragraph_format.space_before = Pt(4)
@@ -272,23 +293,21 @@ def generar_word(datos: dict, logo_bytes: bytes | None) -> bytes:
     rc.font.size = Pt(24)
     rc.font.color.rgb = RGBColor(*COLOR_NAVY_RGB)
 
-    # Subtítulo / Módulo / Guía
     p_sub = doc.add_paragraph()
     p_sub.alignment = WD_ALIGN_PARAGRAPH.CENTER
-    p_sub.paragraph_format.space_after = Pt(24)
+    p_sub.paragraph_format.space_after = Pt(22)
     add_paragraph_border(p_sub, side="bottom", color_hex=COLOR_ACCENT_HEX, sz="12")
     rs = p_sub.add_run(datos["titulo_guia"])
     rs.font.size = Pt(15)
     rs.font.color.rgb = RGBColor(*COLOR_DARK_TEXT_RGB)
 
-    # Espaciador antes de la ficha técnica
     for _ in range(3):
         doc.add_paragraph()
 
-    # Ficha técnica de portada
+    placeholder_vacio = "____________________________" if datos["linea_firma_vacia"] else "Por completar"
     meta_rows = [
-        ("Relator / Docente", datos["relator"]),
-        ("Institución / Cliente", datos["cliente"]),
+        ("Relator / Docente", datos["relator"] or placeholder_vacio),
+        ("Institución / Cliente", datos["cliente"] or placeholder_vacio),
         ("Modalidad / Duración", f"{datos['modalidad']} — {datos['horas']}"),
         ("Código / Versión", datos["codigo"]),
         ("Fecha", datos["fecha"]),
@@ -302,8 +321,8 @@ def generar_word(datos: dict, logo_bytes: bytes | None) -> bytes:
         c1.width = Inches(2.2)
         c2.width = Inches(4.3)
         set_cell_shading(c1, COLOR_LIGHT_BG_HEX)
-        set_cell_margins(c1, top=90, bottom=90, left=140, right=140)
-        set_cell_margins(c2, top=90, bottom=90, left=140, right=140)
+        set_cell_margins(c1, top=95, bottom=95, left=140, right=140)
+        set_cell_margins(c2, top=95, bottom=95, left=140, right=140)
 
         p1 = c1.paragraphs[0]
         r_lbl = p1.add_run(label)
@@ -312,20 +331,20 @@ def generar_word(datos: dict, logo_bytes: bytes | None) -> bytes:
         r_lbl.font.color.rgb = RGBColor(*COLOR_NAVY_RGB)
 
         p2 = c2.paragraphs[0]
-        r_val = p2.add_run(value if value else "Por completar")
+        r_val = p2.add_run(value)
         r_val.font.size = Pt(10)
         r_val.font.color.rgb = RGBColor(*COLOR_DARK_TEXT_RGB)
 
-    # Salto de página al contenido
     doc.add_page_break()
 
     # ------------------------------------------------------------------
-    # CUERPO DE LA GUÍA (Plantilla editable para el relator)
+    # CUERPO DE LA GUÍA
     # ------------------------------------------------------------------
-    def agregar_seccion(titulo: str, instruccion: str, contenido_inicial: str = ""):
+    def agregar_seccion(titulo: str, instruccion: str, contenido_inicial: str = "", espacios_extra: int = 1):
         p_h = doc.add_paragraph()
         p_h.paragraph_format.space_before = Pt(14)
         p_h.paragraph_format.space_after = Pt(6)
+        p_h.paragraph_format.keep_with_next = True
         add_paragraph_border(p_h, side="bottom", color_hex=COLOR_ACCENT_HEX, sz="8")
         rh = p_h.add_run(titulo)
         rh.bold = True
@@ -337,22 +356,22 @@ def generar_word(datos: dict, logo_bytes: bytes | None) -> bytes:
                 p_c = doc.add_paragraph(linea)
                 p_c.paragraph_format.space_after = Pt(4)
         else:
-            # Recuadro guía para el relator
             box = doc.add_table(rows=1, cols=1)
             box.alignment = WD_TABLE_ALIGNMENT.CENTER
-            set_table_borders(box, color_hex=COLOR_BORDER_HEX, sz="4")
+            set_box_borders(box, color_hex=COLOR_BORDER_HEX, accent_left=COLOR_ACCENT_HEX)
             bc = box.rows[0].cells[0]
             bc.width = Inches(6.5)
             set_cell_shading(bc, COLOR_LIGHT_BG_HEX)
-            set_cell_margins(bc, top=120, bottom=120, left=160, right=160)
+            set_cell_margins(bc, top=140, bottom=140, left=180, right=160)
             pb = bc.paragraphs[0]
             rb = pb.add_run(instruccion)
             rb.italic = True
             rb.font.size = Pt(10)
             rb.font.color.rgb = RGBColor(*COLOR_MUTED_RGB)
 
-            p_esp = doc.add_paragraph()
-            p_esp.paragraph_format.space_after = Pt(12)
+            for _ in range(espacios_extra):
+                p_esp = doc.add_paragraph()
+                p_esp.paragraph_format.space_after = Pt(10)
 
     if datos["incluir_secciones"]:
         agregar_seccion(
@@ -368,10 +387,12 @@ def generar_word(datos: dict, logo_bytes: bytes | None) -> bytes:
         agregar_seccion(
             "3. Desarrollo Temático",
             "[Espacio para el relator: redactar el marco conceptual, ejemplos prácticos, procedimientos, esquemas o tablas de apoyo.]",
+            espacios_extra=2,
         )
         agregar_seccion(
             "4. Actividad Práctica / Taller Aplicado",
             "[Espacio para el relator: indicar instrucciones, casos de estudio, preguntas guía, tiempo estimado y criterios de logro.]",
+            espacios_extra=2,
         )
         agregar_seccion(
             "5. Síntesis y Evaluación Formativa",
@@ -387,6 +408,35 @@ def generar_word(datos: dict, logo_bytes: bytes | None) -> bytes:
         r_lib.italic = True
         r_lib.font.color.rgb = RGBColor(*COLOR_MUTED_RGB)
 
+    # Bloque opcional de Control del Documento
+    if datos["incluir_control_doc"]:
+        p_ctrl = doc.add_paragraph()
+        p_ctrl.paragraph_format.space_before = Pt(18)
+        p_ctrl.paragraph_format.space_after = Pt(6)
+        p_ctrl.paragraph_format.keep_with_next = True
+        r_ct = p_ctrl.add_run("Control y Validación del Documento")
+        r_ct.bold = True
+        r_ct.font.size = Pt(11)
+        r_ct.font.color.rgb = RGBColor(*COLOR_NAVY_RGB)
+
+        ctbl = doc.add_table(rows=2, cols=3)
+        ctbl.alignment = WD_TABLE_ALIGNMENT.CENTER
+        set_table_borders(ctbl, color_hex=COLOR_BORDER_HEX, sz="4")
+        encabezados = ["Elaborado por (Relator)", "Revisado por (Coordinación OTEC)", "Fecha de Aprobación"]
+        valores = [datos["relator"] or "Por completar", "Dirección Académica", datos["fecha"]]
+        for i in range(3):
+            c_top = ctbl.rows[0].cells[i]
+            c_bot = ctbl.rows[1].cells[i]
+            set_cell_shading(c_top, COLOR_LIGHT_BG_HEX)
+            set_cell_margins(c_top, top=80, bottom=80, left=100, right=100)
+            set_cell_margins(c_bot, top=100, bottom=100, left=100, right=100)
+            rt_c = c_top.paragraphs[0].add_run(encabezados[i])
+            rt_c.bold = True
+            rt_c.font.size = Pt(9)
+            rt_c.font.color.rgb = RGBColor(*COLOR_NAVY_RGB)
+            rb_c = c_bot.paragraphs[0].add_run(valores[i])
+            rb_c.font.size = Pt(9)
+
     buffer = io.BytesIO()
     doc.save(buffer)
     buffer.seek(0)
@@ -401,58 +451,55 @@ class GuiaOTECPDF(FPDF):
         super().__init__(orientation="P", unit="mm", format="Letter")
         self.datos = datos
         self.logo_bytes = logo_bytes
-        self.set_auto_page_break(auto=True, margin=22)
+        self.alias_nb_pages()  # Habilita {nb} para "Página X de Y"
+        self.set_auto_page_break(auto=True, margin=24)
         self.set_margins(left=22, top=28, right=22)
 
     def header(self):
-        # Sin encabezado en la portada
         if self.page_no() == 1:
             return
 
         if self.logo_bytes:
             try:
-                self.image(io.BytesIO(self.logo_bytes), x=22, y=9, w=26)
+                self.image(io.BytesIO(self.logo_bytes), x=22, y=9, w=24)
             except Exception:
                 pass
 
-        self.set_xy(55, 10)
+        self.set_xy(52, 10)
         self.set_font("Helvetica", "B", 9)
         self.set_text_color(*COLOR_NAVY_RGB)
-        self.cell(
-            139, 5, limpiar_latin1(self.datos["nombre_curso"]), align="R", new_x="LMARGIN", new_y="NEXT"
-        )
+        curso_hdr = truncar_texto(self.datos["nombre_curso"], 62)
+        self.cell(142, 5, limpiar_latin1(curso_hdr), align="R", new_x="LMARGIN", new_y="NEXT")
 
-        self.set_x(55)
+        self.set_x(52)
         self.set_font("Helvetica", "", 8)
         self.set_text_color(*COLOR_MUTED_RGB)
-        sub = f"{self.datos['titulo_guia']}  |  {self.datos['otec_nombre']}"
-        self.cell(139, 4, limpiar_latin1(sub), align="R", new_x="LMARGIN", new_y="NEXT")
+        sub = f"{truncar_texto(self.datos['titulo_guia'], 50)}  |  OTEC Santa Mónica"
+        self.cell(142, 4, limpiar_latin1(sub), align="R", new_x="LMARGIN", new_y="NEXT")
 
-        # Línea separadora
         self.set_draw_color(*COLOR_ACCENT_RGB)
         self.set_line_width(0.5)
         self.line(22, 22, 194, 22)
         self.set_y(28)
 
     def footer(self):
-        # Sin pie de página en la portada
         if self.page_no() == 1:
             return
 
-        self.set_y(-16)
+        self.set_y(-17)
         self.set_draw_color(203, 213, 224)
         self.set_line_width(0.3)
         self.line(22, self.get_y(), 194, self.get_y())
 
-        self.set_y(-14)
-        self.set_font("Helvetica", "", 8)
+        self.set_y(-14.5)
+        self.set_font("Helvetica", "", 7.5)
         self.set_text_color(*COLOR_MUTED_RGB)
-        pie = f"{self.datos['otec_nombre']}  |  {self.datos['pie_pagina']}"
-        self.cell(135, 6, limpiar_latin1(pie), align="L")
+        pie = truncar_texto(f"OTEC Santa Mónica  |  {self.datos['pie_pagina']}", 88)
+        self.cell(138, 6, limpiar_latin1(pie), align="L")
 
         self.set_font("Helvetica", "B", 8)
         self.set_text_color(*COLOR_NAVY_RGB)
-        self.cell(37, 6, limpiar_latin1(f"Página {self.page_no()}"), align="R")
+        self.cell(34, 6, limpiar_latin1(f"Página {self.page_no()} de {{nb}}"), align="R")
 
 
 def generar_pdf(datos: dict, logo_bytes: bytes | None) -> bytes:
@@ -463,7 +510,6 @@ def generar_pdf(datos: dict, logo_bytes: bytes | None) -> bytes:
     # ------------------------------------------------------------------
     pdf.add_page()
 
-    # Franja superior
     pdf.set_fill_color(*COLOR_NAVY_RGB)
     pdf.rect(0, 0, 215.9, 22, style="F")
     pdf.set_xy(22, 7)
@@ -471,44 +517,39 @@ def generar_pdf(datos: dict, logo_bytes: bytes | None) -> bytes:
     pdf.set_text_color(255, 255, 255)
     pdf.cell(172, 8, limpiar_latin1(datos["otec_nombre"].upper()), align="C")
 
-    # Logo centrado
     if logo_bytes:
         try:
-            pdf.image(io.BytesIO(logo_bytes), x=78, y=38, w=60)
-            y_cursor = 102
+            pdf.image(io.BytesIO(logo_bytes), x=78, y=36, w=60)
+            y_cursor = 100
         except Exception:
             y_cursor = 55
     else:
         y_cursor = 55
 
-    # Tipo de documento
     pdf.set_xy(22, y_cursor)
     pdf.set_font("Helvetica", "B", 11)
     pdf.set_text_color(*COLOR_ACCENT_RGB)
     pdf.cell(172, 8, limpiar_latin1(datos["tipo_documento"].upper()), align="C", new_x="LMARGIN", new_y="NEXT")
 
-    # Nombre del curso
     pdf.ln(3)
     pdf.set_font("Helvetica", "B", 22)
     pdf.set_text_color(*COLOR_NAVY_RGB)
     pdf.multi_cell(172, 10, limpiar_latin1(datos["nombre_curso"]), align="C")
 
-    # Subtítulo
     pdf.ln(3)
     pdf.set_font("Helvetica", "", 14)
     pdf.set_text_color(*COLOR_DARK_TEXT_RGB)
     pdf.multi_cell(172, 8, limpiar_latin1(datos["titulo_guia"]), align="C")
 
-    # Línea de acento
     pdf.ln(5)
     pdf.set_draw_color(*COLOR_ACCENT_RGB)
     pdf.set_line_width(0.8)
     pdf.line(55, pdf.get_y(), 161, pdf.get_y())
 
-    # Ficha técnica inferior
+    placeholder_vacio = "____________________________" if datos["linea_firma_vacia"] else "Por completar"
     meta_rows = [
-        ("Relator / Docente", datos["relator"]),
-        ("Institución / Cliente", datos["cliente"]),
+        ("Relator / Docente", datos["relator"] or placeholder_vacio),
+        ("Institución / Cliente", datos["cliente"] or placeholder_vacio),
         ("Modalidad / Duración", f"{datos['modalidad']} - {datos['horas']}"),
         ("Código / Versión", datos["codigo"]),
         ("Fecha", datos["fecha"]),
@@ -528,10 +569,9 @@ def generar_pdf(datos: dict, logo_bytes: bytes | None) -> bytes:
         pdf.set_fill_color(255, 255, 255)
         pdf.set_font("Helvetica", "", 10)
         pdf.set_text_color(*COLOR_DARK_TEXT_RGB)
-        val_txt = value if value else "Por completar"
+        val_txt = truncar_texto(value, 54)
         pdf.cell(117, 10, limpiar_latin1(f"  {val_txt}"), border=1, fill=True, new_x="LMARGIN", new_y="NEXT")
 
-    # Franja inferior decorativa
     pdf.set_fill_color(*COLOR_ACCENT_RGB)
     pdf.rect(0, 272, 215.9, 7.4, style="F")
 
@@ -540,13 +580,17 @@ def generar_pdf(datos: dict, logo_bytes: bytes | None) -> bytes:
     # ------------------------------------------------------------------
     pdf.add_page()
 
-    def agregar_seccion_pdf(titulo: str, instruccion: str, contenido_inicial: str = ""):
+    def agregar_seccion_pdf(titulo: str, instruccion: str, contenido_inicial: str = "", altura_extra: int = 0):
+        # Evita títulos huérfanos al final de la página
+        if pdf.get_y() > 225:
+            pdf.add_page()
+
         pdf.set_font("Helvetica", "B", 13)
         pdf.set_text_color(*COLOR_NAVY_RGB)
         pdf.cell(172, 8, limpiar_latin1(titulo), new_x="LMARGIN", new_y="NEXT")
 
         pdf.set_draw_color(*COLOR_ACCENT_RGB)
-        pdf.set_line_width(0.4)
+        pdf.set_line_width(0.45)
         pdf.line(22, pdf.get_y(), 194, pdf.get_y())
         pdf.ln(4)
 
@@ -554,14 +598,26 @@ def generar_pdf(datos: dict, logo_bytes: bytes | None) -> bytes:
             pdf.set_font("Helvetica", "", 10.5)
             pdf.set_text_color(*COLOR_DARK_TEXT_RGB)
             pdf.multi_cell(172, 6, limpiar_latin1(contenido_inicial.strip()))
-            pdf.ln(6)
+            pdf.ln(7)
         else:
+            # Recuadro con padding interno y barra lateral de acento
+            y_inicio = pdf.get_y()
             pdf.set_fill_color(*COLOR_LIGHT_BG_RGB)
             pdf.set_draw_color(203, 213, 224)
+            pdf.set_line_width(0.3)
+
+            pdf.set_xy(26, y_inicio + 3)
             pdf.set_font("Helvetica", "I", 9.5)
             pdf.set_text_color(*COLOR_MUTED_RGB)
-            pdf.multi_cell(172, 6.5, limpiar_latin1(instruccion), border=1, fill=True)
-            pdf.ln(8)
+            # Medimos altura necesaria simulando en un bloque con relleno
+            pdf.set_xy(22, y_inicio)
+            pdf.multi_cell(172, 6.5, limpiar_latin1(f"  {instruccion}"), border=1, fill=True, padding=(3, 4, 3 + altura_extra, 4))
+            y_fin = pdf.get_y()
+
+            # Barra de acento a la izquierda del recuadro
+            pdf.set_fill_color(*COLOR_ACCENT_RGB)
+            pdf.rect(22, y_inicio, 1.5, y_fin - y_inicio, style="F")
+            pdf.set_y(y_fin + 7)
 
     if datos["incluir_secciones"]:
         agregar_seccion_pdf(
@@ -577,10 +633,12 @@ def generar_pdf(datos: dict, logo_bytes: bytes | None) -> bytes:
         agregar_seccion_pdf(
             "3. Desarrollo Temático",
             "[Espacio para el relator: redactar el marco conceptual, ejemplos prácticos, procedimientos, esquemas o tablas de apoyo.]",
+            altura_extra=12,
         )
         agregar_seccion_pdf(
             "4. Actividad Práctica / Taller Aplicado",
             "[Espacio para el relator: indicar instrucciones, casos de estudio, preguntas guía, tiempo estimado y criterios de logro.]",
+            altura_extra=12,
         )
         agregar_seccion_pdf(
             "5. Síntesis y Evaluación Formativa",
@@ -595,6 +653,33 @@ def generar_pdf(datos: dict, logo_bytes: bytes | None) -> bytes:
         pdf.set_text_color(*COLOR_MUTED_RGB)
         pdf.multi_cell(172, 7, limpiar_latin1("[Espacio disponible para desarrollar el contenido de la guía.]"))
 
+    # Bloque opcional de Control del Documento
+    if datos["incluir_control_doc"]:
+        if pdf.get_y() > 230:
+            pdf.add_page()
+        pdf.ln(4)
+        pdf.set_font("Helvetica", "B", 10.5)
+        pdf.set_text_color(*COLOR_NAVY_RGB)
+        pdf.cell(172, 7, limpiar_latin1("Control y Validación del Documento"), new_x="LMARGIN", new_y="NEXT")
+
+        anchos = [62, 66, 44]
+        encabezados = ["Elaborado por (Relator)", "Revisado por (OTEC)", "Fecha Aprobación"]
+        valores = [truncar_texto(datos["relator"] or "Por completar", 28), "Dirección Académica", datos["fecha"]]
+
+        pdf.set_draw_color(203, 213, 224)
+        pdf.set_fill_color(*COLOR_LIGHT_BG_RGB)
+        pdf.set_font("Helvetica", "B", 8.5)
+        for w, h in zip(anchos, encabezados):
+            pdf.cell(w, 8, limpiar_latin1(f" {h}"), border=1, fill=True)
+        pdf.ln()
+
+        pdf.set_fill_color(255, 255, 255)
+        pdf.set_font("Helvetica", "", 8.5)
+        pdf.set_text_color(*COLOR_DARK_TEXT_RGB)
+        for w, v in zip(anchos, valores):
+            pdf.cell(w, 9, limpiar_latin1(f" {v}"), border=1, fill=True)
+        pdf.ln()
+
     return bytes(pdf.output())
 
 
@@ -605,11 +690,10 @@ def run():
     st.title("Generador de Guías de Capacitación — OTEC Santa Mónica")
     st.caption(
         "Genera plantillas profesionales en Word (.docx) y PDF (.pdf) con portada, "
-        "encabezado y pie de página institucional para relatores."
+        "encabezado, pie de página con numeración (Página X de Y) y control documental."
     )
 
-    # Carga de logo desde GitHub con respaldo manual (útil si el repo es privado)
-    logo_bytes = descargar_logo(LOGO_URL_DEFAULT)
+    logo_bytes = cargar_logo_default()
 
     with st.expander("Configuración del Logo Institucional", expanded=(logo_bytes is None)):
         if logo_bytes:
@@ -617,30 +701,20 @@ def run():
             with col_l1:
                 st.image(logo_bytes, width=150)
             with col_l2:
-                st.success("Logo cargado automáticamente desde GitHub.")
+                st.success("Logo institucional cargado correctamente.")
         else:
-            st.warning(
-                "No se pudo descargar el logo desde la URL de GitHub (verifica si el repositorio es privado). "
-                "Puedes subir el archivo JPG/PNG manualmente aquí:"
-            )
+            st.warning("No se encontró el logo automáticamente. Sube el archivo JPG/PNG aquí:")
 
-        logo_subido = st.file_uploader(
-            "Reemplazar o cargar logo manualmente (opcional)",
-            type=["jpg", "jpeg", "png"],
-        )
+        logo_subido = st.file_uploader("Reemplazar logo (opcional)", type=["jpg", "jpeg", "png"])
         if logo_subido is not None:
             logo_bytes = logo_subido.read()
             st.image(logo_bytes, width=150)
 
-    # Formulario principal
     st.subheader("Datos de Portada y Encabezado")
     col1, col2 = st.columns(2)
 
     with col1:
-        otec_nombre = st.text_input(
-            "Nombre OTEC",
-            value="Centro de Capacitación Santa Mónica Limitada",
-        )
+        otec_nombre = st.text_input("Nombre OTEC", value="Centro de Capacitación Santa Mónica Limitada")
         tipo_documento = st.selectbox(
             "Tipo de Documento",
             [
@@ -650,14 +724,8 @@ def run():
                 "Material de Apoyo Docente",
             ],
         )
-        nombre_curso = st.text_input(
-            "Nombre del Curso",
-            value="Inteligencia Artificial y Análisis de Datos Aplicado",
-        )
-        titulo_guia = st.text_input(
-            "Subtítulo / Módulo / Guía",
-            value="Módulo 1: Fundamentos y Herramientas Prácticas",
-        )
+        nombre_curso = st.text_input("Nombre del Curso", value="Inteligencia Artificial y Análisis de Datos Aplicado")
+        titulo_guia = st.text_input("Subtítulo / Módulo / Guía", value="Módulo 1: Fundamentos y Herramientas Prácticas")
 
     with col2:
         relator = st.text_input("Nombre del Relator / Docente", value="")
@@ -674,28 +742,25 @@ def run():
             fecha_sel = st.date_input("Fecha", value=date.today())
 
     pie_pagina = st.text_input(
-        "Texto de Pie de Página",
-        value="Material exclusivo de capacitación — Prohibida su reproducción sin autorización",
+        "Texto de Pie de Página (breve para evitar cortes)",
+        value="Material exclusivo de capacitación — Prohibida su reproducción",
     )
 
-    st.subheader("Estructura Base para el Relator")
-    incluir_secciones = st.checkbox(
-        "Incluir secciones guía (Objetivos, Contenidos, Desarrollo, Taller, Evaluación, Bibliografía)",
-        value=True,
-    )
+    st.subheader("Estructura y Opciones")
+    c_op1, c_op2, c_op3 = st.columns(3)
+    with c_op1:
+        incluir_secciones = st.checkbox("Incluir 6 secciones guía", value=True)
+    with c_op2:
+        incluir_control_doc = st.checkbox("Incluir tabla de Control Documental", value=True)
+    with c_op3:
+        linea_firma_vacia = st.checkbox("Usar línea (____) en campos vacíos", value=False)
 
     objetivo_general = ""
     contenidos = ""
     if incluir_secciones:
         with st.expander("Completar Objetivo y Contenidos ahora (opcional)"):
-            objetivo_general = st.text_area(
-                "Objetivo General (si se deja vacío, aparecerá el recuadro editable para el relator)",
-                height=90,
-            )
-            contenidos = st.text_area(
-                "Contenidos del Módulo (opcional)",
-                height=100,
-            )
+            objetivo_general = st.text_area("Objetivo General (opcional)", height=90)
+            contenidos = st.text_area("Contenidos del Módulo (opcional)", height=100)
 
     datos = {
         "otec_nombre": otec_nombre,
@@ -710,6 +775,8 @@ def run():
         "fecha": fecha_sel.strftime("%d/%m/%Y"),
         "pie_pagina": pie_pagina,
         "incluir_secciones": incluir_secciones,
+        "incluir_control_doc": incluir_control_doc,
+        "linea_firma_vacia": linea_firma_vacia,
         "objetivo_general": objetivo_general,
         "contenidos": contenidos,
     }
