@@ -26,7 +26,7 @@ from xml.etree import ElementTree
 
 from docx import Document
 from docx.enum.section import WD_SECTION
-from docx.enum.table import WD_ALIGN_VERTICAL, WD_TABLE_ALIGNMENT
+from docx.enum.table import WD_ALIGN_VERTICAL, WD_TABLE_ALIGNMENT, WD_ROW_HEIGHT_RULE
 from docx.enum.text import WD_ALIGN_PARAGRAPH
 from docx.enum.style import WD_STYLE_TYPE
 from docx.oxml import OxmlElement
@@ -47,7 +47,7 @@ from reportlab.platypus import Paragraph
 
 # -------------------------------- Configuración --------------------------------
 LOGO_LOCAL = "OTEC_Santa_Monica_Opcion_1.svg"
-VERSION_FORMATO = "4.1-logo-compacto"
+VERSION_FORMATO = "4.2-word-azul-solido"
 LOGO_URL = (
     "https://raw.githubusercontent.com/armando207949779-hue/"
     "ARTHEMIS---SANTA-MONICA/main/OTEC_Santa_Monica_Opcion_1.svg"
@@ -350,52 +350,6 @@ def texto_word(p, contenido, size=10, color=TINTA, bold=False):
     return run
 
 
-def fondo_portada_word(seccion, color: str):
-    """Imagen de color plano anclada detrás del texto, solo en la portada.
-
-    A diferencia de un fondo de documento global, no colorea las páginas
-    interiores. El elemento queda como imagen editable en el encabezado de Word.
-    """
-    tono = Image.new("RGB", (4, 4), rgb(color))
-    imagen = io.BytesIO()
-    tono.save(imagen, format="PNG")
-    imagen.seek(0)
-    p = seccion.first_page_header.paragraphs[0]
-    p.paragraph_format.space_after = Pt(0)
-    objeto = p.add_run().add_picture(
-        imagen, width=seccion.page_width, height=seccion.page_height
-    )
-    inline = objeto._inline
-    anchor = OxmlElement("wp:anchor")
-    for clave, valor in (
-        ("distT", "0"), ("distB", "0"), ("distL", "0"), ("distR", "0"),
-        ("simplePos", "0"), ("relativeHeight", "0"), ("behindDoc", "1"),
-        ("locked", "1"), ("layoutInCell", "1"), ("allowOverlap", "1"),
-    ):
-        anchor.set(clave, valor)
-    simple = OxmlElement("wp:simplePos")
-    simple.set("x", "0")
-    simple.set("y", "0")
-    anchor.append(simple)
-    for eje in ("H", "V"):
-        pos = OxmlElement(f"wp:position{eje}")
-        pos.set("relativeFrom", "page")
-        offset = OxmlElement("wp:posOffset")
-        offset.text = "0"
-        pos.append(offset)
-        anchor.append(pos)
-    anchor.append(inline.extent)
-    efecto = OxmlElement("wp:effectExtent")
-    for lado in ("l", "t", "r", "b"):
-        efecto.set(lado, "0")
-    anchor.append(efecto)
-    anchor.append(OxmlElement("wp:wrapNone"))
-    for parte in list(inline):
-        if parte.tag != qn("wp:extent"):
-            anchor.append(parte)
-    inline.getparent().replace(inline, anchor)
-
-
 def logo_word(p, raw: bytes | None, max_ancho=1.25, max_alto=0.62, fallback="SANTA MÓNICA"):
     if raw:
         try:
@@ -432,7 +386,7 @@ def preparar_estilos(doc: Document, datos: dict):
 
 
 def generar_word(datos: dict, logo_bytes: bytes | None = None) -> bytes:
-    """Crea portada de una página e interiores editables numerados desde 1."""
+    """Crea portada azul editable con color de celda nativo de Word."""
     validar(datos)
     doc = Document()
     preparar_estilos(doc, datos)
@@ -441,18 +395,30 @@ def generar_word(datos: dict, logo_bytes: bytes | None = None) -> bytes:
     # La portada usa su propia sección, sin encabezado ni pie repetidos.
     portada = doc.sections[0]
     portada.page_width, portada.page_height = (Inches(8.27), Inches(11.69)) if datos.get("papel") == "A4" else (Inches(8.5), Inches(11))
-    portada.top_margin = Inches(0.68)
-    portada.bottom_margin = Inches(0.56)
-    portada.left_margin = Inches(0.74)
-    portada.right_margin = Inches(0.74)
+    # La portada se construye sobre una celda sombreada. Word, LibreOffice y
+    # Word Online respetan mucho mejor w:shd que una imagen anclada detrás del
+    # texto (la cual algunos visores ocultan y deja texto blanco sobre blanco).
+    portada.top_margin = Inches(0)
+    portada.bottom_margin = Inches(0)
+    portada.left_margin = Inches(0)
+    portada.right_margin = Inches(0)
     portada.different_first_page_header_footer = True
-    ancho = portada.page_width.inches - portada.left_margin.inches - portada.right_margin.inches
+    ancho = portada.page_width.inches - 1.48
 
-    # Abarca toda la hoja y se mantiene solo en esta sección.
-    fondo_portada_word(portada, principal)
+    fondo = doc.add_table(rows=1, cols=1)
+    fondo.autofit = False
+    fondo.columns[0].width = portada.page_width
+    bordes_tabla(fondo)
+    fila = fondo.rows[0]
+    fila.height = portada.page_height - Inches(0.045)
+    fila.height_rule = WD_ROW_HEIGHT_RULE.AT_LEAST
+    panel = fila.cells[0]
+    fondo_celda(panel, principal)
+    margenes_celda(panel, top=980, left=1065, bottom=720, right=1065)
+    panel.vertical_alignment = WD_ALIGN_VERTICAL.TOP
 
     # Marca y datos de edición.
-    cab = doc.add_table(rows=1, cols=2)
+    cab = panel.add_table(rows=1, cols=2)
     cab.autofit = False
     cab.columns[0].width = Inches(ancho * 0.55)
     cab.columns[1].width = Inches(ancho * 0.45)
@@ -475,39 +441,39 @@ def generar_word(datos: dict, logo_bytes: bytes | None = None) -> bytes:
     p2.paragraph_format.space_after = Pt(0)
     texto_word(p2, datos.get("fecha"), 9, "#D6E7F4")
 
-    linea = doc.add_paragraph()
+    linea = panel.add_paragraph()
     linea.paragraph_format.space_before = Pt(19)
     linea.paragraph_format.space_after = Pt(0)
     borde_parrafo(linea, acento, grosor="16")
 
-    espacio = doc.add_paragraph()
+    espacio = panel.add_paragraph()
     espacio.paragraph_format.space_after = Pt(60)
 
-    tipo = doc.add_paragraph()
+    tipo = panel.add_paragraph()
     tipo.paragraph_format.space_after = Pt(12)
     texto_word(tipo, texto(datos["tipo_documento"]).upper(), 10.5, acento, True)
 
-    titulo = doc.add_paragraph()
+    titulo = panel.add_paragraph()
     titulo.paragraph_format.space_after = Pt(18)
     titulo.paragraph_format.line_spacing = 1.08
     titulo.paragraph_format.keep_with_next = True
     texto_word(titulo, datos["nombre_curso"],
                titulo_tamano(datos["nombre_curso"]) + 3, BLANCO, True)
 
-    sub = doc.add_paragraph()
+    sub = panel.add_paragraph()
     sub.paragraph_format.space_after = Pt(8)
     sub.paragraph_format.line_spacing = 1.16
     texto_word(sub, datos.get("titulo_guia"), 14, "#D6E7F4")
 
     # Ficha con etiquetas consistentes, alturas automáticas y sin recortes.
-    espacio2 = doc.add_paragraph()
+    espacio2 = panel.add_paragraph()
     espacio2.paragraph_format.space_before = Pt(30)
     espacio2.paragraph_format.space_after = Pt(9)
-    etiqueta = doc.add_paragraph()
+    etiqueta = panel.add_paragraph()
     etiqueta.paragraph_format.space_after = Pt(7)
     texto_word(etiqueta, "INFORMACIÓN DEL DOCUMENTO", 9, acento, True)
 
-    meta = doc.add_table(rows=3, cols=2)
+    meta = panel.add_table(rows=3, cols=2)
     meta.alignment = WD_TABLE_ALIGNMENT.CENTER
     meta.autofit = False
     meta.columns[0].width = Inches(ancho / 2)
@@ -525,13 +491,19 @@ def generar_word(datos: dict, logo_bytes: bytes | None = None) -> bytes:
         p2.paragraph_format.space_after = Pt(0)
         texto_word(p2, valor, 10, BLANCO)
 
-    cierre = doc.add_paragraph()
+    cierre = panel.add_paragraph()
     cierre.paragraph_format.space_before = Pt(18)
     cierre.paragraph_format.space_after = Pt(0)
     texto_word(cierre, datos["otec_nombre"], 9, BLANCO, True)
-    p = doc.add_paragraph()
+    p = panel.add_paragraph()
     p.paragraph_format.space_after = Pt(0)
     texto_word(p, datos.get("pie_pagina"), 8, "#CEDBEC")
+
+    # Elimina el párrafo vacío que python-docx crea antes de la primera tabla
+    # anidada y evita una franja innecesaria en la parte superior de la portada.
+    inicial = panel.paragraphs[0]
+    if not inicial.text and not inicial._p.xpath(".//w:drawing"):
+        panel._tc.remove(inicial._p)
 
     # Sección interior: no hereda encabezados ni pies de la portada.
     interior = doc.add_section(WD_SECTION.NEW_PAGE)
@@ -869,7 +841,7 @@ def run():
         </div>""",
         unsafe_allow_html=True,
     )
-    st.caption(f"Versión del formato: {VERSION_FORMATO} · Logo en tarjeta compacta")
+    st.caption(f"Versión del formato: {VERSION_FORMATO} · Portada Word con azul sólido y logo compacto")
 
     # No ofrecer descargas generadas por una versión anterior de la aplicación.
     for clave_antigua in ("plantilla_otec_v2", "plantilla_otec_v3"):
