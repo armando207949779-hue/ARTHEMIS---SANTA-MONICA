@@ -1,3 +1,4 @@
+import importlib
 import streamlit as st
 
 st.set_page_config(
@@ -10,7 +11,7 @@ st.sidebar.title("Navegación")
 opcion = st.sidebar.radio(
     "Selecciona una app:",
     [
-        "Pestaña 1",
+        "Pestaña 1: Generador de Guías",
         "Pestaña 2",
         "Pestaña 3",
         "Pestaña 4",
@@ -24,9 +25,9 @@ opcion = st.sidebar.radio(
 )
 
 # Contenido principal según la selección
-if opcion == "Pestaña 1":
-    st.title("Pestaña 1")
-    st.info("Espacio disponible para conectar app 1.")
+if opcion == "Pestaña 1: Generador de Guías":
+    app_01 = importlib.import_module("01_APP")
+    app_01.run()
 
 elif opcion == "Pestaña 2":
     st.title("Pestaña 2")
