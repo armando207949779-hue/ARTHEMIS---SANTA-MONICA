@@ -47,7 +47,7 @@ from reportlab.platypus import Paragraph
 
 # -------------------------------- Configuración --------------------------------
 LOGO_LOCAL = "OTEC_Santa_Monica_Opcion_1.svg"
-VERSION_FORMATO = "4.3-word-alineado"
+VERSION_FORMATO = "4.4-word-anchos-fijos"
 LOGO_URL = (
     "https://raw.githubusercontent.com/armando207949779-hue/"
     "ARTHEMIS---SANTA-MONICA/main/OTEC_Santa_Monica_Opcion_1.svg"
@@ -300,6 +300,35 @@ def bordes_tabla(tabla, color=None):
     tblpr.append(bordes)
 
 
+def anchos_word_explicitos(tabla, anchos: list[float]):
+    """Sincroniza tblGrid, tblW y tcW para Microsoft Word de escritorio.
+
+    python-docx cambia el ancho de las columnas en tblGrid, pero deja los tcW
+    de las celdas con los anchos predeterminados (6.5 in en tablas de portada).
+    LibreOffice prioriza tblGrid; Microsoft Word puede priorizar tcW, estrechar
+    la portada y recortar tanto imágenes como texto.
+    """
+    tabla.autofit = False
+    for indice, ancho in enumerate(anchos):
+        medida = Inches(ancho)
+        tabla.columns[indice].width = medida
+        for fila in tabla.rows:
+            fila.cells[indice].width = medida
+
+    propiedades = tabla._tbl.tblPr
+    ancho_total = propiedades.find(qn("w:tblW"))
+    if ancho_total is None:
+        ancho_total = OxmlElement("w:tblW")
+        propiedades.insert(0, ancho_total)
+    ancho_total.set(qn("w:type"), "dxa")
+    ancho_total.set(qn("w:w"), str(round(sum(anchos) * 1440)))
+    distribucion = propiedades.find(qn("w:tblLayout"))
+    if distribucion is None:
+        distribucion = OxmlElement("w:tblLayout")
+        propiedades.append(distribucion)
+    distribucion.set(qn("w:type"), "fixed")
+
+
 def borde_parrafo(p, color: str, lado="bottom", grosor="8"):
     ppr = p._p.get_or_add_pPr()
     antiguo = ppr.find(qn("w:pBdr"))
@@ -406,8 +435,7 @@ def generar_word(datos: dict, logo_bytes: bytes | None = None) -> bytes:
     ancho = portada.page_width.inches - 1.48
 
     fondo = doc.add_table(rows=1, cols=1)
-    fondo.autofit = False
-    fondo.columns[0].width = portada.page_width
+    anchos_word_explicitos(fondo, [portada.page_width.inches])
     bordes_tabla(fondo)
     fila = fondo.rows[0]
     fila.height = portada.page_height - Inches(0.045)
@@ -419,9 +447,7 @@ def generar_word(datos: dict, logo_bytes: bytes | None = None) -> bytes:
 
     # Marca y datos de edición.
     cab = panel.add_table(rows=1, cols=2)
-    cab.autofit = False
-    cab.columns[0].width = Inches(ancho * 0.65)
-    cab.columns[1].width = Inches(ancho * 0.35)
+    anchos_word_explicitos(cab, [ancho * 0.65, ancho * 0.35])
     bordes_tabla(cab)
     izq, der = cab.rows[0].cells
     # El blanco cubre únicamente la imagen del logo, no toda la celda.
@@ -479,9 +505,7 @@ def generar_word(datos: dict, logo_bytes: bytes | None = None) -> bytes:
 
     meta = panel.add_table(rows=3, cols=2)
     meta.alignment = WD_TABLE_ALIGNMENT.CENTER
-    meta.autofit = False
-    meta.columns[0].width = Inches(ancho / 2)
-    meta.columns[1].width = Inches(ancho / 2)
+    anchos_word_explicitos(meta, [ancho / 2, ancho / 2])
     bordes_tabla(meta, "#5A7093")
     for i, (etiqueta, valor) in enumerate(ficha(datos)):
         celda = meta.cell(i // 2, i % 2)
@@ -534,9 +558,7 @@ def generar_word(datos: dict, logo_bytes: bytes | None = None) -> bytes:
 
     encabezado = interior.header
     tab = encabezado.add_table(rows=1, cols=2, width=Inches(ancho_int))
-    tab.autofit = False
-    tab.columns[0].width = Inches(ancho_int * 0.35)
-    tab.columns[1].width = Inches(ancho_int * 0.65)
+    anchos_word_explicitos(tab, [ancho_int * 0.35, ancho_int * 0.65])
     bordes_tabla(tab)
     c_logo, c_info = tab.rows[0].cells
     fondo_celda(c_logo, principal if logo_bytes else BLANCO)
@@ -566,9 +588,7 @@ def generar_word(datos: dict, logo_bytes: bytes | None = None) -> bytes:
     rule.paragraph_format.space_after = Pt(5)
     borde_parrafo(rule, BORDE, lado="top", grosor="6")
     tf = pie.add_table(rows=1, cols=2, width=Inches(ancho_int))
-    tf.autofit = False
-    tf.columns[0].width = Inches(ancho_int * 0.72)
-    tf.columns[1].width = Inches(ancho_int * 0.28)
+    anchos_word_explicitos(tf, [ancho_int * 0.72, ancho_int * 0.28])
     bordes_tabla(tf)
     for celda in tf.rows[0].cells:
         fondo_celda(celda, principal)
@@ -845,7 +865,7 @@ def run():
         </div>""",
         unsafe_allow_html=True,
     )
-    st.caption(f"Versión del formato: {VERSION_FORMATO} · Word azul sólido con portada alineada al PDF")
+    st.caption(f"Versión del formato: {VERSION_FORMATO} · Portada Word sin recortes en Microsoft Word")
 
     # No ofrecer descargas generadas por una versión anterior de la aplicación.
     for clave_antigua in ("plantilla_otec_v2", "plantilla_otec_v3"):
