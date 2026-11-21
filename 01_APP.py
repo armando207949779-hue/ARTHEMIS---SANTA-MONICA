@@ -1,10 +1,11 @@
-"""Generador editorial de plantillas de capacitación para OTEC Santa Mónica.
+"""Generador editorial azul institucional para OTEC Santa Mónica.
 
 Uso:
     pip install streamlit python-docx reportlab pillow requests
     streamlit run 00_APP.py   # Dentro del repositorio ARTHEMIS
     streamlit run 01_APP.py   # Para probar solo este módulo
 
+Portada de fondo azul sólido, logo grande y páginas interiores con banda azul.
 La salida Word es totalmente editable. El PDF reproduce la misma identidad visual.
 El logo oficial se lee desde OTEC_Santa_Monica_Opcion_1.svg del repositorio,
 recorta sus márgenes transparentes y se incrusta como PNG en Word y PDF.
@@ -27,6 +28,7 @@ from docx import Document
 from docx.enum.section import WD_SECTION
 from docx.enum.table import WD_ALIGN_VERTICAL, WD_TABLE_ALIGNMENT
 from docx.enum.text import WD_ALIGN_PARAGRAPH
+from docx.enum.style import WD_STYLE_TYPE
 from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
 from docx.shared import Inches, Pt, RGBColor
@@ -183,6 +185,20 @@ def imagen_dimensiones(raw: bytes) -> tuple[int, int]:
         return imagen.size
 
 
+def logo_con_placa(raw: bytes | None) -> bytes | None:
+    """Presenta el logo azul sobre blanco dentro de un encabezado azul."""
+    if not raw:
+        return None
+    with Image.open(io.BytesIO(raw)) as original:
+        marca = original.convert("RGBA")
+    marca.thumbnail((1010, 315), Image.Resampling.LANCZOS)
+    placa = Image.new("RGBA", (1130, 400), "#FFFFFF")
+    placa.alpha_composite(marca, ((1130 - marca.width) // 2, (400 - marca.height) // 2))
+    salida = io.BytesIO()
+    placa.save(salida, format="PNG", optimize=True)
+    return salida.getvalue()
+
+
 # ----------------------------- Diseño compartido ------------------------------
 def ficha(datos: dict) -> list[tuple[str, str]]:
     vacio = "________________" if datos.get("linea_vacia") else "Por completar"
@@ -308,6 +324,52 @@ def texto_word(p, contenido, size=10, color=TINTA, bold=False):
     return run
 
 
+def fondo_portada_word(seccion, color: str):
+    """Imagen de color plano anclada detrás del texto, solo en la portada.
+
+    A diferencia de un fondo de documento global, no colorea las páginas
+    interiores. El elemento queda como imagen editable en el encabezado de Word.
+    """
+    tono = Image.new("RGB", (4, 4), rgb(color))
+    imagen = io.BytesIO()
+    tono.save(imagen, format="PNG")
+    imagen.seek(0)
+    p = seccion.first_page_header.paragraphs[0]
+    p.paragraph_format.space_after = Pt(0)
+    objeto = p.add_run().add_picture(
+        imagen, width=seccion.page_width, height=seccion.page_height
+    )
+    inline = objeto._inline
+    anchor = OxmlElement("wp:anchor")
+    for clave, valor in (
+        ("distT", "0"), ("distB", "0"), ("distL", "0"), ("distR", "0"),
+        ("simplePos", "0"), ("relativeHeight", "0"), ("behindDoc", "1"),
+        ("locked", "1"), ("layoutInCell", "1"), ("allowOverlap", "1"),
+    ):
+        anchor.set(clave, valor)
+    simple = OxmlElement("wp:simplePos")
+    simple.set("x", "0")
+    simple.set("y", "0")
+    anchor.append(simple)
+    for eje in ("H", "V"):
+        pos = OxmlElement(f"wp:position{eje}")
+        pos.set("relativeFrom", "page")
+        offset = OxmlElement("wp:posOffset")
+        offset.text = "0"
+        pos.append(offset)
+        anchor.append(pos)
+    anchor.append(inline.extent)
+    efecto = OxmlElement("wp:effectExtent")
+    for lado in ("l", "t", "r", "b"):
+        efecto.set(lado, "0")
+    anchor.append(efecto)
+    anchor.append(OxmlElement("wp:wrapNone"))
+    for parte in list(inline):
+        if parte.tag != qn("wp:extent"):
+            anchor.append(parte)
+    inline.getparent().replace(inline, anchor)
+
+
 def logo_word(p, raw: bytes | None, max_ancho=1.25, max_alto=0.62, fallback="SANTA MÓNICA"):
     if raw:
         try:
@@ -353,58 +415,65 @@ def generar_word(datos: dict, logo_bytes: bytes | None = None) -> bytes:
     # La portada usa su propia sección, sin encabezado ni pie repetidos.
     portada = doc.sections[0]
     portada.page_width, portada.page_height = (Inches(8.27), Inches(11.69)) if datos.get("papel") == "A4" else (Inches(8.5), Inches(11))
-    portada.top_margin = Inches(0.64)
+    portada.top_margin = Inches(0.68)
     portada.bottom_margin = Inches(0.56)
     portada.left_margin = Inches(0.74)
     portada.right_margin = Inches(0.74)
     portada.different_first_page_header_footer = True
     ancho = portada.page_width.inches - portada.left_margin.inches - portada.right_margin.inches
 
+    # Abarca toda la hoja y se mantiene solo en esta sección.
+    fondo_portada_word(portada, principal)
+
     # Marca y datos de edición.
     cab = doc.add_table(rows=1, cols=2)
     cab.autofit = False
-    cab.columns[0].width = Inches(ancho * 0.58)
-    cab.columns[1].width = Inches(ancho * 0.42)
+    cab.columns[0].width = Inches(ancho * 0.55)
+    cab.columns[1].width = Inches(ancho * 0.45)
     bordes_tabla(cab)
     izq, der = cab.rows[0].cells
-    margenes_celda(izq, 40, 0, 40, 40)
-    margenes_celda(der, 40, 40, 40, 0)
-    logo_word(izq.paragraphs[0], logo_bytes, max_ancho=2.25, max_alto=0.82,
+    fondo_celda(izq, BLANCO)
+    fondo_celda(der, principal)
+    margenes_celda(izq, 210, 180, 200, 160)
+    margenes_celda(der, 90, 40, 90, 0)
+    izq.paragraphs[0].alignment = WD_ALIGN_PARAGRAPH.CENTER
+    logo_word(izq.paragraphs[0], logo_bytes, max_ancho=3.15, max_alto=1.10,
               fallback="OTEC SANTA MÓNICA")
     p = der.paragraphs[0]
     p.alignment = WD_ALIGN_PARAGRAPH.RIGHT
-    texto_word(p, corto(datos.get("codigo"), 35), 9, principal, True)
+    texto_word(p, corto(datos.get("codigo"), 35), 9, BLANCO, True)
     p2 = der.add_paragraph()
     p2.alignment = WD_ALIGN_PARAGRAPH.RIGHT
     p2.paragraph_format.space_after = Pt(0)
-    texto_word(p2, datos.get("fecha"), 9, GRIS)
+    texto_word(p2, datos.get("fecha"), 9, "#D6E7F4")
 
     linea = doc.add_paragraph()
-    linea.paragraph_format.space_before = Pt(8)
+    linea.paragraph_format.space_before = Pt(19)
     linea.paragraph_format.space_after = Pt(0)
     borde_parrafo(linea, acento, grosor="16")
 
     espacio = doc.add_paragraph()
-    espacio.paragraph_format.space_after = Pt(22)
+    espacio.paragraph_format.space_after = Pt(60)
 
     tipo = doc.add_paragraph()
     tipo.paragraph_format.space_after = Pt(12)
-    texto_word(tipo, texto(datos["tipo_documento"]).upper(), 10, acento, True)
+    texto_word(tipo, texto(datos["tipo_documento"]).upper(), 10.5, acento, True)
 
     titulo = doc.add_paragraph()
-    titulo.paragraph_format.space_after = Pt(12)
-    titulo.paragraph_format.line_spacing = 1.06
+    titulo.paragraph_format.space_after = Pt(18)
+    titulo.paragraph_format.line_spacing = 1.08
     titulo.paragraph_format.keep_with_next = True
-    texto_word(titulo, datos["nombre_curso"], titulo_tamano(datos["nombre_curso"]), principal, True)
+    texto_word(titulo, datos["nombre_curso"],
+               titulo_tamano(datos["nombre_curso"]) + 3, BLANCO, True)
 
     sub = doc.add_paragraph()
     sub.paragraph_format.space_after = Pt(8)
     sub.paragraph_format.line_spacing = 1.16
-    texto_word(sub, datos.get("titulo_guia"), 14, GRIS)
+    texto_word(sub, datos.get("titulo_guia"), 14, "#D6E7F4")
 
     # Ficha con etiquetas consistentes, alturas automáticas y sin recortes.
     espacio2 = doc.add_paragraph()
-    espacio2.paragraph_format.space_before = Pt(8)
+    espacio2.paragraph_format.space_before = Pt(30)
     espacio2.paragraph_format.space_after = Pt(9)
     etiqueta = doc.add_paragraph()
     etiqueta.paragraph_format.space_after = Pt(7)
@@ -415,35 +484,35 @@ def generar_word(datos: dict, logo_bytes: bytes | None = None) -> bytes:
     meta.autofit = False
     meta.columns[0].width = Inches(ancho / 2)
     meta.columns[1].width = Inches(ancho / 2)
-    bordes_tabla(meta, BORDE)
+    bordes_tabla(meta, "#5A7093")
     for i, (etiqueta, valor) in enumerate(ficha(datos)):
         celda = meta.cell(i // 2, i % 2)
-        fondo_celda(celda, FONDO if i // 2 % 2 == 0 else BLANCO)
-        margenes_celda(celda, top=110, left=170, bottom=100, right=130)
+        fondo_celda(celda, principal)
+        margenes_celda(celda, top=145, left=180, bottom=135, right=130)
         celda.vertical_alignment = WD_ALIGN_VERTICAL.CENTER
         p = celda.paragraphs[0]
         p.paragraph_format.space_after = Pt(3)
         texto_word(p, etiqueta, 7.7, acento, True)
         p2 = celda.add_paragraph()
         p2.paragraph_format.space_after = Pt(0)
-        texto_word(p2, valor, 10, TINTA)
+        texto_word(p2, valor, 10, BLANCO)
 
     cierre = doc.add_paragraph()
     cierre.paragraph_format.space_before = Pt(18)
     cierre.paragraph_format.space_after = Pt(0)
-    texto_word(cierre, datos["otec_nombre"], 9, principal, True)
+    texto_word(cierre, datos["otec_nombre"], 9, BLANCO, True)
     p = doc.add_paragraph()
     p.paragraph_format.space_after = Pt(0)
-    texto_word(p, datos.get("pie_pagina"), 8, GRIS)
+    texto_word(p, datos.get("pie_pagina"), 8, "#CEDBEC")
 
     # Sección interior: no hereda encabezados ni pies de la portada.
     interior = doc.add_section(WD_SECTION.NEW_PAGE)
     interior.page_width, interior.page_height = portada.page_width, portada.page_height
-    interior.top_margin = Inches(1.12)
+    interior.top_margin = Inches(1.26)
     interior.bottom_margin = Inches(0.93)
     interior.left_margin = Inches(0.83)
     interior.right_margin = Inches(0.83)
-    interior.header_distance = Inches(0.27)
+    interior.header_distance = Inches(0.23)
     interior.footer_distance = Inches(0.39)
     interior.different_first_page_header_footer = False
     interior.header.is_linked_to_previous = False
@@ -462,22 +531,27 @@ def generar_word(datos: dict, logo_bytes: bytes | None = None) -> bytes:
     encabezado = interior.header
     tab = encabezado.add_table(rows=1, cols=2, width=Inches(ancho_int))
     tab.autofit = False
-    tab.columns[0].width = Inches(ancho_int * 0.32)
-    tab.columns[1].width = Inches(ancho_int * 0.68)
+    tab.columns[0].width = Inches(ancho_int * 0.35)
+    tab.columns[1].width = Inches(ancho_int * 0.65)
     bordes_tabla(tab)
     c_logo, c_info = tab.rows[0].cells
-    margenes_celda(c_logo, 0, 0, 0, 0)
-    margenes_celda(c_info, 0, 40, 0, 0)
-    logo_word(c_logo.paragraphs[0], logo_bytes, max_ancho=1.86, max_alto=0.53,
+    fondo_celda(c_logo, principal if logo_bytes else BLANCO)
+    fondo_celda(c_info, principal)
+    margenes_celda(c_logo, 60, 65, 55, 70)
+    margenes_celda(c_info, 100, 135, 90, 95)
+    c_info.vertical_alignment = WD_ALIGN_VERTICAL.CENTER
+    c_logo.paragraphs[0].alignment = WD_ALIGN_PARAGRAPH.CENTER
+    logo_word(c_logo.paragraphs[0], logo_con_placa(logo_bytes),
+              max_ancho=2.12, max_alto=0.75,
               fallback="OTEC SANTA MÓNICA")
     p = c_info.paragraphs[0]
     p.alignment = WD_ALIGN_PARAGRAPH.RIGHT
     p.paragraph_format.space_after = Pt(1)
-    texto_word(p, corto(datos["nombre_curso"], 64), 8.3, principal, True)
+    texto_word(p, corto(datos["nombre_curso"], 64), 8.3, BLANCO, True)
     p = c_info.add_paragraph()
     p.alignment = WD_ALIGN_PARAGRAPH.RIGHT
     p.paragraph_format.space_after = Pt(0)
-    texto_word(p, corto(datos.get("titulo_guia"), 66), 7.4, GRIS)
+    texto_word(p, corto(datos.get("titulo_guia"), 66), 7.4, "#C8DFED")
     regla = encabezado.add_paragraph()
     regla.paragraph_format.space_before = Pt(0)
     regla.paragraph_format.space_after = Pt(0)
@@ -492,17 +566,25 @@ def generar_word(datos: dict, logo_bytes: bytes | None = None) -> bytes:
     tf.columns[0].width = Inches(ancho_int * 0.72)
     tf.columns[1].width = Inches(ancho_int * 0.28)
     bordes_tabla(tf)
+    for celda in tf.rows[0].cells:
+        fondo_celda(celda, principal)
+        margenes_celda(celda, 80, 110, 70, 100)
     p = tf.cell(0, 0).paragraphs[0]
     p.paragraph_format.space_after = Pt(0)
-    texto_word(p, corto(datos["otec_nombre"], 49), 7.3, principal, True)
+    texto_word(p, corto(datos["otec_nombre"], 49), 7.3, BLANCO, True)
     p2 = tf.cell(0, 0).add_paragraph()
     p2.paragraph_format.space_after = Pt(0)
-    texto_word(p2, corto(datos.get("pie_pagina"), 82), 7, GRIS)
+    texto_word(p2, corto(datos.get("pie_pagina"), 82), 7, "#C8DFED")
     num = tf.cell(0, 1).paragraphs[0]
     num.alignment = WD_ALIGN_PARAGRAPH.RIGHT
     num.paragraph_format.space_after = Pt(0)
-    texto_word(num, "PÁG.  ", 8, GRIS)
-    campo_word(num, "PAGE", principal)
+    estilo_num = doc.styles.add_style("Número de página institucional", WD_STYLE_TYPE.PARAGRAPH)
+    estilo_num.font.name = "Arial"
+    estilo_num.font.size = Pt(8)
+    estilo_num.font.color.rgb = color_word(BLANCO)
+    num.style = estilo_num
+    texto_word(num, "PÁG.  ", 8, BLANCO)
+    campo_word(num, "PAGE", BLANCO)
 
     # Las páginas limpias ya llevan su formato; no contienen párrafos de relleno.
     if datos.get("estructura_inicial"):
@@ -609,69 +691,77 @@ def generar_pdf(datos: dict, logo_bytes: bytes | None = None) -> bytes:
     x = 52
     ancho = w - 104
 
-    # ------------------------------- Portada ---------------------------------
-    pdf_logo(c, logo_bytes, x, h - 44, 170, 63, principal, bold)
-    pdf_parrafo(c, corto(datos.get("codigo"), 38), w - 225, h - 53, 173, 19,
-                bold, principal, 9, 7, align=TA_RIGHT)
-    pdf_parrafo(c, datos.get("fecha"), w - 225, h - 72, 173, 16,
-                normal, GRIS, 9, 7, align=TA_RIGHT)
+    # ---------------------- Portada azul a sangre -----------------------------
+    c.setFillColor(rlcolor(principal))
+    c.rect(0, 0, w, h, stroke=0, fill=1)
 
-    c.setStrokeColor(rlcolor(acento))
-    c.setLineWidth(2.1)
-    c.line(x, h - 124, w - x, h - 124)
+    # El logo tiene letras azul marino: una placa blanca preserva su identidad.
+    c.setFillColor(rlcolor(BLANCO))
+    c.roundRect(x, h - 183, 317, 117, radius=10, stroke=0, fill=1)
+    pdf_logo(c, logo_bytes, x + 18, h - 84, 281, 91, principal, bold)
+    pdf_parrafo(c, corto(datos.get("codigo"), 34), w - 210, h - 80, 158, 21,
+                bold, BLANCO, 9, 7, align=TA_RIGHT)
+    pdf_parrafo(c, datos.get("fecha"), w - 210, h - 103, 158, 19,
+                normal, "#C8DFED", 9, 7, align=TA_RIGHT)
 
-    pdf_parrafo(c, texto(datos["tipo_documento"]).upper(), x, h - 187,
-                ancho, 22, bold, acento, 11, 9)
-    altura_tit = pdf_parrafo(c, datos["nombre_curso"], x, h - 221,
-                            ancho, 136, bold, principal, titulo_tamano(datos["nombre_curso"]), 16,
+    c.setFillColor(rlcolor(acento))
+    c.rect(x, h - 214, 154, 4, stroke=0, fill=1)
+    pdf_parrafo(c, texto(datos["tipo_documento"]).upper(), x, h - 251,
+                ancho, 21, bold, acento, 11, 9)
+    altura_tit = pdf_parrafo(c, datos["nombre_curso"], x, h - 289,
+                            ancho, 143, bold, BLANCO,
+                            titulo_tamano(datos["nombre_curso"]) + 3, 15,
                             leading_factor=1.13)
-    pdf_parrafo(c, datos.get("titulo_guia"), x, h - 234 - altura_tit,
-                ancho, 60, normal, GRIS, 15, 10, leading_factor=1.22)
+    pdf_parrafo(c, datos.get("titulo_guia"), x, h - 305 - altura_tit,
+                ancho, 55, normal, "#D6E7F4", 14.5, 10,
+                leading_factor=1.20)
 
-    # Malla de información anclada abajo, incluso cuando varía el título.
-    y_label = 273
-    pdf_parrafo(c, "INFORMACIÓN DEL DOCUMENTO", x, y_label + 26,
-                ancho, 15, bold, acento, 9.2, 8)
-    alto = 46
-    sep = 7
+    # Ficha inferior: sin cajas blancas que interrumpan el fondo sólido.
+    y_label = 237
+    pdf_parrafo(c, "INFORMACIÓN DEL DOCUMENTO", x, y_label + 29,
+                ancho, 17, bold, acento, 9.3, 8)
+    alto = 45
+    sep = 8
     col_w = (ancho - sep) / 2
     for i, (etiqueta, valor) in enumerate(ficha(datos)):
         fila, col = divmod(i, 2)
         bx = x + col * (col_w + sep)
         by = y_label - fila * (alto + 7)
-        c.setFillColor(rlcolor(FONDO if fila % 2 == 0 else BLANCO))
-        c.setStrokeColor(rlcolor(BORDE))
-        c.setLineWidth(0.65)
-        c.roundRect(bx, by - alto, col_w, alto, radius=3, stroke=1, fill=1)
+        c.setStrokeColor(rlcolor("#537298"))
+        c.setLineWidth(0.75)
+        c.roundRect(bx, by - alto, col_w, alto, radius=3, stroke=1, fill=0)
         c.setFillColor(rlcolor(acento))
-        c.rect(bx, by - alto, 3, alto, fill=1, stroke=0)
+        c.rect(bx, by - alto, 3.2, alto, fill=1, stroke=0)
         pdf_parrafo(c, etiqueta, bx + 12, by - 9, col_w - 24, 13,
-                    bold, acento, 7.7, 6.5)
-        pdf_parrafo(c, valor, bx + 12, by - 22, col_w - 24, 23,
-                    normal, TINTA, 9.8, 7.5)
+                    bold, acento, 7.5, 6.2)
+        pdf_parrafo(c, valor, bx + 12, by - 23, col_w - 24, 22,
+                    normal, BLANCO, 9.8, 7.2)
 
-    pdf_parrafo(c, datos["otec_nombre"], x, 91, ancho, 18,
-                bold, principal, 9, 7)
-    pdf_parrafo(c, datos.get("pie_pagina"), x, 76, ancho, 24,
-                normal, GRIS, 8, 6.5)
+    pdf_parrafo(c, datos["otec_nombre"], x, 51, ancho, 17,
+                bold, BLANCO, 8.7, 7)
+    pdf_parrafo(c, datos.get("pie_pagina"), x, 36, ancho, 24,
+                normal, "#C8DFED", 7.5, 6.3)
     c.showPage()
 
     # ------------------------ Interiores sin portada -------------------------
     left = 58
     usable = w - left * 2
     for numero in range(1, int(datos["hojas_blancas"]) + 1):
-        # Encabezado estable, sin invadir el área de escritura.
-        pdf_logo(c, logo_bytes, left, h - 24, 148, 44, principal, bold)
-        pdf_parrafo(c, corto(datos["nombre_curso"], 70), left + 162, h - 31,
-                    usable - 162, 18, bold, principal, 8.6, 7, align=TA_RIGHT)
-        pdf_parrafo(c, corto(datos.get("titulo_guia"), 66), left + 162, h - 49,
-                    usable - 162, 18, normal, GRIS, 7.6, 6.5, align=TA_RIGHT)
-        c.setStrokeColor(rlcolor(acento))
-        c.setLineWidth(0.75)
-        c.line(left, h - 79, w - left, h - 79)
+        # Banda superior sólida y logo amplio sobre placa blanca.
+        c.setFillColor(rlcolor(principal))
+        c.rect(0, h - 106, w, 106, stroke=0, fill=1)
+        c.setFillColor(rlcolor(BLANCO))
+        c.roundRect(left, h - 87, 182, 67, radius=5, stroke=0, fill=1)
+        pdf_logo(c, logo_bytes, left + 9, h - 29, 164, 53, principal, bold)
+        pdf_parrafo(c, corto(datos["nombre_curso"], 68), left + 252, h - 35,
+                    usable - 252, 36, bold, BLANCO, 9.1, 7, align=TA_RIGHT)
+        pdf_parrafo(c, corto(datos.get("titulo_guia"), 64), left + 252, h - 72,
+                    usable - 252, 24, normal, "#C8DFED", 7.7, 6.4, align=TA_RIGHT)
+        c.setFillColor(rlcolor(acento))
+        c.rect(0, h - 109, w, 3, stroke=0, fill=1)
 
         if numero == 1 and datos.get("estructura_inicial"):
-            y = h - 129
+            y = h - 162
             for cabecera, descripcion in (
                 ("Objetivo de aprendizaje", "[Redacte aquí el objetivo de aprendizaje del módulo.]"),
                 ("Contenidos", "[Desarrolle los contenidos del curso.]"),
@@ -683,17 +773,16 @@ def generar_pdf(datos: dict, logo_bytes: bytes | None = None) -> bytes:
                 pdf_parrafo(c, descripcion, left, y, usable, 40, normal, GRIS, 10, 8)
                 y -= 74
 
-        # Pie de página con numeración relativa a los interiores.
-        c.setStrokeColor(rlcolor(BORDE))
-        c.setLineWidth(0.6)
-        c.line(left, 57, w - left, 57)
-        pdf_parrafo(c, corto(datos["otec_nombre"], 62), left, 44,
-                    usable * 0.68, 13, bold, principal, 7.7, 6.6)
+        # Pie oscuro consistente con el encabezado.
+        c.setFillColor(rlcolor(principal))
+        c.rect(0, 0, w, 63, stroke=0, fill=1)
+        pdf_parrafo(c, corto(datos["otec_nombre"], 62), left, 47,
+                    usable * 0.68, 13, bold, BLANCO, 7.7, 6.6)
         pdf_parrafo(c, corto(datos.get("pie_pagina"), 85), left, 31,
-                    usable * 0.72, 18, normal, GRIS, 7, 6.1)
+                    usable * 0.72, 18, normal, "#C8DFED", 7, 6.1)
         pdf_parrafo(c, f"PÁG. {numero}",
-                    left + usable * 0.72, 43, usable * 0.28, 20,
-                    bold, principal, 8, 7, align=TA_RIGHT)
+                    left + usable * 0.72, 45, usable * 0.28, 20,
+                    bold, acento, 8, 7, align=TA_RIGHT)
         c.showPage()
 
     c.save()
@@ -715,11 +804,23 @@ def run():
         .block-container {max-width: 1150px; padding-top: 2.1rem}
         h1, h2, h3 {letter-spacing: -.025em}
         div.stButton > button[kind=primary] {min-height: 3rem; font-weight: 650}
+        .otec-hero {background:#0B2452; color:#fff; padding:27px 31px;
+                    border-radius:13px; margin-bottom:21px}
+        .otec-hero .eyebrow {font-size:.82rem; letter-spacing:.15em;
+                             font-weight:750; color:#00C4DC}
+        .otec-hero h1 {font-size:2.05rem; color:#fff; margin:.35rem 0 .45rem}
+        .otec-hero p {color:#D6E7F4; margin:0; font-size:.98rem}
         </style>""",
         unsafe_allow_html=True,
     )
-    st.title("Plantillas de capacitación")
-    st.caption("OTEC Santa Mónica · Portada institucional, páginas interiores y pie corporativo")
+    st.markdown(
+        """<div class="otec-hero">
+        <div class="eyebrow">OTEC SANTA MÓNICA</div>
+        <h1>Plantillas de capacitación</h1>
+        <p>Portada azul institucional · Logo ampliado · Encabezado y pie corporativos</p>
+        </div>""",
+        unsafe_allow_html=True,
+    )
 
     with st.sidebar:
         st.header("Diseño institucional")
@@ -745,7 +846,7 @@ def run():
                 return logo_predeterminado()
             logo = cargar()
         if logo:
-            st.image(logo, width=245)
+            st.image(logo, width=260)
         else:
             st.info("Sin logo: se mostrará el nombre institucional.")
         st.caption("El documento es editable en Word; el PDF queda listo para distribuir.")
@@ -781,7 +882,10 @@ def run():
             help="Agrega Objetivo, Contenidos, Actividad práctica y Evaluación en lugar de una primera hoja vacía.",
         )
         linea_vacia = st.checkbox("Mostrar líneas para datos no completados", value=False)
-        st.info("Las hojas posteriores a la portada mantienen siempre el mismo encabezado y pie. ")
+        st.info(
+            "La portada lleva fondo azul sólido. Las hojas interiores son blancas "
+            "para facilitar la lectura y escritura, con bandas institucionales azules."
+        )
 
     datos = dict(
         otec_nombre=otec_nombre, tipo_documento=tipo, nombre_curso=curso,
@@ -806,7 +910,7 @@ def run():
             st.session_state["plantilla_otec_v2"] = (
                 word, pdf, base or "Curso", firma_configuracion(datos, logo)
             )
-            st.success("Listo. Descarga la plantilla con el nuevo formato editorial.")
+            st.success("Listo. Descarga la plantilla azul institucional con logo ampliado.")
 
     if "plantilla_otec_v2" in st.session_state:
         word, pdf, base, firma_generada = st.session_state["plantilla_otec_v2"]
