@@ -47,6 +47,7 @@ from reportlab.platypus import Paragraph
 
 # -------------------------------- Configuración --------------------------------
 LOGO_LOCAL = "OTEC_Santa_Monica_Opcion_1.svg"
+VERSION_FORMATO = "4.1-logo-compacto"
 LOGO_URL = (
     "https://raw.githubusercontent.com/armando207949779-hue/"
     "ARTHEMIS---SANTA-MONICA/main/OTEC_Santa_Monica_Opcion_1.svg"
@@ -207,14 +208,18 @@ def imagen_dimensiones(raw: bytes) -> tuple[int, int]:
 
 
 def logo_con_placa(raw: bytes | None) -> bytes | None:
-    """Presenta el logo azul sobre blanco dentro de un encabezado azul."""
+    """Crea una base blanca ajustada al propio logo, sin lienzo sobrante."""
     if not raw:
         return None
     with Image.open(io.BytesIO(raw)) as original:
         marca = original.convert("RGBA")
-    marca.thumbnail((950, 330), Image.Resampling.LANCZOS)
-    placa = Image.new("RGBA", (1000, 360), "#FFFFFF")
-    placa.alpha_composite(marca, ((1000 - marca.width) // 2, (360 - marca.height) // 2))
+    marca.thumbnail((1100, 420), Image.Resampling.LANCZOS)
+    margen_x = max(9, round(marca.width * 0.025))
+    margen_y = max(6, round(marca.height * 0.025))
+    placa = Image.new(
+        "RGBA", (marca.width + 2 * margen_x, marca.height + 2 * margen_y), "#FFFFFF"
+    )
+    placa.alpha_composite(marca, (margen_x, margen_y))
     salida = io.BytesIO()
     placa.save(salida, format="PNG", optimize=True)
     return salida.getvalue()
@@ -453,12 +458,14 @@ def generar_word(datos: dict, logo_bytes: bytes | None = None) -> bytes:
     cab.columns[1].width = Inches(ancho * 0.45)
     bordes_tabla(cab)
     izq, der = cab.rows[0].cells
-    fondo_celda(izq, BLANCO)
+    # El blanco cubre únicamente la imagen del logo, no toda la celda.
+    fondo_celda(izq, principal if logo_bytes else BLANCO)
     fondo_celda(der, principal)
-    margenes_celda(izq, 145, 120, 145, 120)
+    margenes_celda(izq, 100, 50, 100, 50)
     margenes_celda(der, 90, 40, 90, 0)
     izq.paragraphs[0].alignment = WD_ALIGN_PARAGRAPH.CENTER
-    logo_word(izq.paragraphs[0], logo_bytes, max_ancho=3.48, max_alto=1.27,
+    logo_word(izq.paragraphs[0], logo_con_placa(logo_bytes),
+              max_ancho=3.48, max_alto=1.37,
               fallback="OTEC SANTA MÓNICA")
     p = der.paragraphs[0]
     p.alignment = WD_ALIGN_PARAGRAPH.RIGHT
@@ -563,7 +570,7 @@ def generar_word(datos: dict, logo_bytes: bytes | None = None) -> bytes:
     c_info.vertical_alignment = WD_ALIGN_VERTICAL.CENTER
     c_logo.paragraphs[0].alignment = WD_ALIGN_PARAGRAPH.CENTER
     logo_word(c_logo.paragraphs[0], logo_con_placa(logo_bytes),
-              max_ancho=2.20, max_alto=0.80,
+              max_ancho=2.25, max_alto=0.88,
               fallback="OTEC SANTA MÓNICA")
     p = c_info.paragraphs[0]
     p.alignment = WD_ALIGN_PARAGRAPH.RIGHT
@@ -690,19 +697,34 @@ def pdf_parrafo(c, contenido: str, x: float, y_top: float, ancho: float, alto_ma
 
 
 def pdf_logo(c, raw: bytes | None, x, y_top, max_w, max_h,
-             principal: str, bold_font: str):
+             principal: str, bold_font: str, tarjeta=False):
+    """Logo proporcional; opcionalmente dibuja una placa a su medida."""
     if raw:
         try:
             w, h = imagen_dimensiones(raw)
             escala = min(max_w / w, max_h / h)
             dw, dh = w * escala, h * escala
-            dx = x + (max_w - dw) / 2
-            dy = y_top - max_h + (max_h - dh) / 2
+            if tarjeta:
+                pad_x, pad_y = 9, 7
+                c.setFillColor(rlcolor(BLANCO))
+                c.roundRect(x, y_top - dh - pad_y * 2,
+                            dw + pad_x * 2, dh + pad_y * 2,
+                            radius=6, stroke=0, fill=1)
+                dx, dy = x + pad_x, y_top - pad_y - dh
+            else:
+                dx = x + (max_w - dw) / 2
+                dy = y_top - max_h + (max_h - dh) / 2
             c.drawImage(ImageReader(io.BytesIO(raw)), dx, dy,
                         width=dw, height=dh, mask="auto")
             return
         except Exception:
             pass
+    if tarjeta:
+        c.setFillColor(rlcolor(BLANCO))
+        c.roundRect(x, y_top - 55, 205, 55, radius=6, stroke=0, fill=1)
+        pdf_parrafo(c, "OTEC SANTA MÓNICA", x + 9, y_top - 17, 185, 25,
+                    bold_font, principal, 11, 8)
+        return
     pdf_parrafo(c, "OTEC SANTA MÓNICA", x, y_top, max_w, max_h,
                 bold_font, principal, 11, 8)
 
@@ -723,10 +745,9 @@ def generar_pdf(datos: dict, logo_bytes: bytes | None = None) -> bytes:
     c.setFillColor(rlcolor(principal))
     c.rect(0, 0, w, h, stroke=0, fill=1)
 
-    # El logo tiene letras azul marino: una placa blanca preserva su identidad.
-    c.setFillColor(rlcolor(BLANCO))
-    c.roundRect(x, h - 187, 340, 132, radius=10, stroke=0, fill=1)
-    pdf_logo(c, logo_bytes, x + 10, h - 64, 320, 116, principal, bold)
+    # Placa dimensionada según el logo, como en el diseño de referencia.
+    pdf_logo(c, logo_bytes, x, h - 58, 304, 114,
+             principal, bold, tarjeta=True)
     pdf_parrafo(c, corto(datos.get("codigo"), 34), w - 210, h - 80, 158, 21,
                 bold, BLANCO, 9, 7, align=TA_RIGHT)
     pdf_parrafo(c, datos.get("fecha"), w - 210, h - 103, 158, 19,
@@ -778,9 +799,8 @@ def generar_pdf(datos: dict, logo_bytes: bytes | None = None) -> bytes:
         # Banda superior sólida y logo amplio sobre placa blanca.
         c.setFillColor(rlcolor(principal))
         c.rect(0, h - 106, w, 106, stroke=0, fill=1)
-        c.setFillColor(rlcolor(BLANCO))
-        c.roundRect(left, h - 87, 182, 67, radius=5, stroke=0, fill=1)
-        pdf_logo(c, logo_bytes, left + 6, h - 24, 170, 60, principal, bold)
+        pdf_logo(c, logo_bytes, left, h - 19, 173, 60,
+                 principal, bold, tarjeta=True)
         pdf_parrafo(c, corto(datos["nombre_curso"], 68), left + 252, h - 35,
                     usable - 252, 36, bold, BLANCO, 9.1, 7, align=TA_RIGHT)
         pdf_parrafo(c, corto(datos.get("titulo_guia"), 64), left + 252, h - 72,
@@ -849,6 +869,12 @@ def run():
         </div>""",
         unsafe_allow_html=True,
     )
+    st.caption(f"Versión del formato: {VERSION_FORMATO} · Logo en tarjeta compacta")
+
+    # No ofrecer descargas generadas por una versión anterior de la aplicación.
+    for clave_antigua in ("plantilla_otec_v2", "plantilla_otec_v3"):
+        st.session_state.pop(clave_antigua, None)
+    clave_descargas = f"plantilla_otec_{VERSION_FORMATO}"
 
     with st.sidebar:
         st.header("Diseño institucional")
@@ -874,9 +900,9 @@ def run():
                 logo = None
         else:
             @st.cache_data(show_spinner=False, ttl=3600)
-            def cargar():
+            def cargar(version_logo: str):
                 return logo_predeterminado()
-            logo = cargar()
+            logo = cargar(VERSION_FORMATO)
             st.caption("Usando el SVG oficial del repositorio. Para volver a él, retira cualquier archivo subido.")
         if logo:
             st.image(logo, width=260)
@@ -940,13 +966,13 @@ def run():
             st.error(f"No se pudo generar la plantilla: {exc}")
         else:
             base = re.sub(r"[^\w-]+", "_", texto(curso), flags=re.UNICODE).strip("_")[:75]
-            st.session_state["plantilla_otec_v2"] = (
+            st.session_state[clave_descargas] = (
                 word, pdf, base or "Curso", firma_configuracion(datos, logo)
             )
             st.success("Listo. Descarga la plantilla azul institucional con logo ampliado.")
 
-    if "plantilla_otec_v2" in st.session_state:
-        word, pdf, base, firma_generada = st.session_state["plantilla_otec_v2"]
+    if clave_descargas in st.session_state:
+        word, pdf, base, firma_generada = st.session_state[clave_descargas]
         if firma_generada != firma_configuracion(datos, logo):
             st.warning(
                 "Modificaste datos o diseño desde la última generación. "
