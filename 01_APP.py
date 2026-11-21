@@ -2,20 +2,26 @@
 
 Uso:
     pip install streamlit python-docx reportlab pillow requests
-    streamlit run plantilla_otec_profesional.py
+    streamlit run 00_APP.py   # Dentro del repositorio ARTHEMIS
+    streamlit run 01_APP.py   # Para probar solo este módulo
 
 La salida Word es totalmente editable. El PDF reproduce la misma identidad visual.
-No se exige conexión a internet: el logo puede cargarse localmente y la tipografía
-PDF utiliza fuentes del sistema cuando están disponibles.
+El logo oficial se lee desde OTEC_Santa_Monica_Opcion_1.svg del repositorio,
+recorta sus márgenes transparentes y se incrusta como PNG en Word y PDF.
+La tipografía PDF utiliza fuentes Unicode del sistema cuando están disponibles.
 """
 
 from __future__ import annotations
 
 import io
+import base64
+import hashlib
+import json
 import re
 from datetime import date
 from html import escape
 from pathlib import Path
+from xml.etree import ElementTree
 
 from docx import Document
 from docx.enum.section import WD_SECTION
@@ -24,7 +30,7 @@ from docx.enum.text import WD_ALIGN_PARAGRAPH
 from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
 from docx.shared import Inches, Pt, RGBColor
-from PIL import Image
+from PIL import Image, ImageOps
 from reportlab.lib import colors
 from reportlab.lib.enums import TA_CENTER, TA_LEFT, TA_RIGHT
 from reportlab.lib.pagesizes import A4, letter
@@ -37,13 +43,14 @@ from reportlab.platypus import Paragraph
 
 
 # -------------------------------- Configuración --------------------------------
-LOGO_LOCAL = "OTEC_Santa_Monica_SII.jpg"
+LOGO_LOCAL = "OTEC_Santa_Monica_Opcion_1.svg"
 LOGO_URL = (
     "https://raw.githubusercontent.com/armando207949779-hue/"
-    "ARTHEMIS---SANTA-MONICA/main/OTEC_Santa_Monica_SII.jpg"
+    "ARTHEMIS---SANTA-MONICA/main/OTEC_Santa_Monica_Opcion_1.svg"
 )
 
 PALETAS = {
+    "Institucional Santa Mónica": ("#0B2452", "#00AFC7"),
     "Azul marino y turquesa": ("#183B56", "#169A92"),
     "Petróleo y cobre": ("#174B50", "#BD8552"),
     "Grafito y dorado": ("#273245", "#AB8650"),
@@ -95,12 +102,69 @@ def validar(datos: dict):
         rgb(datos[campo])
 
 
+def normalizar_logo(raw: bytes) -> bytes:
+    """Convierte el SVG institucional (PNG incrustado) a PNG y recorta transparencia.
+
+    Word y ReportLab admiten PNG de forma nativa, sin depender de CairoSVG.
+    Para otros SVG vectoriales, se solicita una exportación PNG del usuario.
+    """
+    if not raw or len(raw) > 8_000_000:
+        raise ValueError("El logo está vacío o supera el límite de 8 MB.")
+
+    if b"<svg" in raw[:600].lower():
+        try:
+            raiz = ElementTree.fromstring(raw)
+        except ElementTree.ParseError as exc:
+            raise ValueError("El archivo SVG no tiene una estructura válida.") from exc
+        encontrada = None
+        for elemento in raiz.iter():
+            for atributo in elemento.attrib.values():
+                if atributo.startswith("data:image/png;base64,"):
+                    encontrada = atributo.split(",", 1)[1]
+                    break
+            if encontrada:
+                break
+        if not encontrada:
+            raise ValueError(
+                "Este SVG no contiene un PNG incrustado. Expórtalo como PNG transparente."
+            )
+        try:
+            raw = base64.b64decode(encontrada, validate=True)
+        except (ValueError, base64.binascii.Error) as exc:
+            raise ValueError("La imagen incrustada en el SVG no se pudo leer.") from exc
+
+    try:
+        with Image.open(io.BytesIO(raw)) as original:
+            if original.width * original.height > 36_000_000:
+                raise ValueError("El logo es demasiado grande para procesarlo.")
+            imagen = ImageOps.exif_transpose(original).convert("RGBA")
+    except (OSError, ValueError) as exc:
+        raise ValueError("Formato de logo no válido. Usa SVG institucional, PNG o JPG.") from exc
+
+    # El SVG de OTEC tiene amplios márgenes transparentes: los retiramos.
+    mascara = imagen.getchannel("A").point(lambda x: 255 if x > 12 else 0)
+    limites = mascara.getbbox()
+    if limites:
+        relleno = max(4, round(min(imagen.size) * 0.012))
+        izquierda, arriba, derecha, abajo = limites
+        limites = (
+            max(0, izquierda - relleno), max(0, arriba - relleno),
+            min(imagen.width, derecha + relleno), min(imagen.height, abajo + relleno),
+        )
+        imagen = imagen.crop(limites)
+    imagen.thumbnail((2400, 1600), Image.Resampling.LANCZOS)
+    salida = io.BytesIO()
+    imagen.save(salida, format="PNG", optimize=True)
+    return salida.getvalue()
+
+
 def logo_predeterminado() -> bytes | None:
-    archivo = Path(LOGO_LOCAL)
+    # Primero se utiliza el logo versionado junto a 01_APP.py en GitHub.
+    archivo = Path(__file__).resolve().parent / LOGO_LOCAL
     if archivo.is_file():
         try:
-            return archivo.read_bytes()
-        except OSError:
+            return normalizar_logo(archivo.read_bytes())
+        except (OSError, ValueError):
             pass
     try:
         import requests
@@ -108,8 +172,7 @@ def logo_predeterminado() -> bytes | None:
         respuesta = requests.get(LOGO_URL, timeout=6)
         respuesta.raise_for_status()
         if len(respuesta.content) <= 5_000_000:
-            Image.open(io.BytesIO(respuesta.content)).verify()
-            return respuesta.content
+            return normalizar_logo(respuesta.content)
     except Exception:
         pass
     return None
@@ -140,6 +203,12 @@ def tamano_papel(datos: dict):
 def titulo_tamano(titulo: str) -> float:
     n = len(texto(titulo))
     return 29 if n < 54 else 26 if n < 85 else 22 if n < 130 else 19
+
+
+def firma_configuracion(datos: dict, logo_bytes: bytes | None) -> str:
+    """Permite detectar si el usuario cambió campos después de generar el archivo."""
+    cadena = json.dumps(datos, sort_keys=True, ensure_ascii=False).encode("utf-8")
+    return hashlib.sha256(cadena + (logo_bytes or b"")).hexdigest()
 
 
 # ------------------------------ Utilidades Word -------------------------------
@@ -300,7 +369,7 @@ def generar_word(datos: dict, logo_bytes: bytes | None = None) -> bytes:
     izq, der = cab.rows[0].cells
     margenes_celda(izq, 40, 0, 40, 40)
     margenes_celda(der, 40, 40, 40, 0)
-    logo_word(izq.paragraphs[0], logo_bytes, max_ancho=1.75, max_alto=0.78,
+    logo_word(izq.paragraphs[0], logo_bytes, max_ancho=2.25, max_alto=0.82,
               fallback="OTEC SANTA MÓNICA")
     p = der.paragraphs[0]
     p.alignment = WD_ALIGN_PARAGRAPH.RIGHT
@@ -374,7 +443,7 @@ def generar_word(datos: dict, logo_bytes: bytes | None = None) -> bytes:
     interior.bottom_margin = Inches(0.93)
     interior.left_margin = Inches(0.83)
     interior.right_margin = Inches(0.83)
-    interior.header_distance = Inches(0.35)
+    interior.header_distance = Inches(0.27)
     interior.footer_distance = Inches(0.39)
     interior.different_first_page_header_footer = False
     interior.header.is_linked_to_previous = False
@@ -393,13 +462,13 @@ def generar_word(datos: dict, logo_bytes: bytes | None = None) -> bytes:
     encabezado = interior.header
     tab = encabezado.add_table(rows=1, cols=2, width=Inches(ancho_int))
     tab.autofit = False
-    tab.columns[0].width = Inches(ancho_int * 0.26)
-    tab.columns[1].width = Inches(ancho_int * 0.74)
+    tab.columns[0].width = Inches(ancho_int * 0.32)
+    tab.columns[1].width = Inches(ancho_int * 0.68)
     bordes_tabla(tab)
     c_logo, c_info = tab.rows[0].cells
     margenes_celda(c_logo, 0, 0, 0, 0)
     margenes_celda(c_info, 0, 40, 0, 0)
-    logo_word(c_logo.paragraphs[0], logo_bytes, max_ancho=1.2, max_alto=0.39,
+    logo_word(c_logo.paragraphs[0], logo_bytes, max_ancho=1.86, max_alto=0.53,
               fallback="OTEC SANTA MÓNICA")
     p = c_info.paragraphs[0]
     p.alignment = WD_ALIGN_PARAGRAPH.RIGHT
@@ -541,7 +610,7 @@ def generar_pdf(datos: dict, logo_bytes: bytes | None = None) -> bytes:
     ancho = w - 104
 
     # ------------------------------- Portada ---------------------------------
-    pdf_logo(c, logo_bytes, x, h - 50, 146, 56, principal, bold)
+    pdf_logo(c, logo_bytes, x, h - 44, 170, 63, principal, bold)
     pdf_parrafo(c, corto(datos.get("codigo"), 38), w - 225, h - 53, 173, 19,
                 bold, principal, 9, 7, align=TA_RIGHT)
     pdf_parrafo(c, datos.get("fecha"), w - 225, h - 72, 173, 16,
@@ -592,11 +661,11 @@ def generar_pdf(datos: dict, logo_bytes: bytes | None = None) -> bytes:
     usable = w - left * 2
     for numero in range(1, int(datos["hojas_blancas"]) + 1):
         # Encabezado estable, sin invadir el área de escritura.
-        pdf_logo(c, logo_bytes, left, h - 30, 110, 33, principal, bold)
-        pdf_parrafo(c, corto(datos["nombre_curso"], 70), left + 125, h - 31,
-                    usable - 125, 18, bold, principal, 8.6, 7, align=TA_RIGHT)
-        pdf_parrafo(c, corto(datos.get("titulo_guia"), 66), left + 125, h - 49,
-                    usable - 125, 18, normal, GRIS, 7.6, 6.5, align=TA_RIGHT)
+        pdf_logo(c, logo_bytes, left, h - 24, 148, 44, principal, bold)
+        pdf_parrafo(c, corto(datos["nombre_curso"], 70), left + 162, h - 31,
+                    usable - 162, 18, bold, principal, 8.6, 7, align=TA_RIGHT)
+        pdf_parrafo(c, corto(datos.get("titulo_guia"), 66), left + 162, h - 49,
+                    usable - 162, 18, normal, GRIS, 7.6, 6.5, align=TA_RIGHT)
         c.setStrokeColor(rlcolor(acento))
         c.setLineWidth(0.75)
         c.line(left, h - 79, w - left, h - 79)
@@ -656,23 +725,27 @@ def run():
         st.header("Diseño institucional")
         paleta = st.selectbox("Paleta de colores", list(PALETAS) + ["Personalizada"])
         if paleta == "Personalizada":
-            primario = st.color_picker("Color principal", "#183B56")
-            acento = st.color_picker("Color de acento", "#169A92")
+            primario = st.color_picker("Color principal", "#0B2452")
+            acento = st.color_picker("Color de acento", "#00AFC7")
         else:
             primario, acento = PALETAS[paleta]
             st.markdown(f"**Principal:** `{primario}`  **Acento:** `{acento}`")
         papel = st.selectbox("Formato del papel", ["Carta", "A4"])
         st.markdown("---")
-        logo_subido = st.file_uploader("Logo de la institución", type=["png", "jpg", "jpeg"])
+        logo_subido = st.file_uploader("Logo de la institución", type=["svg", "png", "jpg", "jpeg"])
         if logo_subido:
-            logo = logo_subido.getvalue()
+            try:
+                logo = normalizar_logo(logo_subido.getvalue())
+            except ValueError as exc:
+                st.error(f"No se pudo cargar el logo: {exc}")
+                logo = None
         else:
             @st.cache_data(show_spinner=False, ttl=3600)
             def cargar():
                 return logo_predeterminado()
             logo = cargar()
         if logo:
-            st.image(logo, width=150)
+            st.image(logo, width=245)
         else:
             st.info("Sin logo: se mostrará el nombre institucional.")
         st.caption("El documento es editable en Word; el PDF queda listo para distribuir.")
@@ -730,21 +803,29 @@ def run():
             st.error(f"No se pudo generar la plantilla: {exc}")
         else:
             base = re.sub(r"[^\w-]+", "_", texto(curso), flags=re.UNICODE).strip("_")[:75]
-            st.session_state["plantilla_otec"] = (word, pdf, base or "Curso")
+            st.session_state["plantilla_otec_v2"] = (
+                word, pdf, base or "Curso", firma_configuracion(datos, logo)
+            )
             st.success("Listo. Descarga la plantilla con el nuevo formato editorial.")
 
-    if "plantilla_otec" in st.session_state:
-        word, pdf, base = st.session_state["plantilla_otec"]
+    if "plantilla_otec_v2" in st.session_state:
+        word, pdf, base, firma_generada = st.session_state["plantilla_otec_v2"]
+        if firma_generada != firma_configuracion(datos, logo):
+            st.warning(
+                "Modificaste datos o diseño desde la última generación. "
+                "Presiona «Generar Word y PDF» para actualizar los archivos."
+            )
         c1, c2 = st.columns(2)
         with c1:
             st.download_button(
                 "Descargar Word editable", word, f"Plantilla_{base}.docx",
                 mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-                use_container_width=True,
+                use_container_width=True, on_click="ignore",
             )
         with c2:
             st.download_button("Descargar PDF", pdf, f"Plantilla_{base}.pdf",
-                               mime="application/pdf", use_container_width=True)
+                               mime="application/pdf", use_container_width=True,
+                               on_click="ignore")
         try:
             import fitz  # Opcional: pip install pymupdf
             muestra = fitz.open(stream=pdf, filetype="pdf")
